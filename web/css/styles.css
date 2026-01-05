@@ -72,20 +72,36 @@ svg {
 }
 
 .light-theme {
-    --bg-primary: #f8fafc;
-    --bg-secondary: #f1f5f9;
-    --bg-tertiary: #e2e8f0;
-    --text-primary: #0f172a;
-    --text-secondary: #475569;
-    --text-tertiary: #94a3b8;
-    --border-color: rgba(0, 0, 0, 0.08);
-    --border-glow: rgba(0, 229, 255, 0.1);
-    --glass-bg: rgba(255, 255, 255, 0.8);
-    --glass-border: rgba(0, 0, 0, 0.05);
-    --shadow-neon: 0 4px 12px rgba(0, 0, 0, 0.05);
-    --accent-primary: #0088cc;
-    --accent-secondary: #10b981;
-    --accent-hover: #0077aa;
+    /* Custom Palette: Cream & Hunter Green */
+    --bg-primary: #FFFDD0;
+    /* Cream */
+    --bg-secondary: #FBF9CC;
+    /* Lighter Cream */
+    --bg-tertiary: #F7F5C5;
+    /* Darker Cream */
+    --text-primary: #355E3B;
+    /* Hunter Green */
+    --text-secondary: #4A7A52;
+    /* Lighter Hunter Green */
+    --text-tertiary: #6B9C75;
+    /* Muted Green */
+    --border-color: rgba(53, 94, 59, 0.2);
+    --border-glow: rgba(53, 94, 59, 0.1);
+
+    /* Glass Effect Overrides for Cream Background */
+    --glass-bg: rgba(255, 253, 208, 0.85);
+    --glass-border: rgba(53, 94, 59, 0.1);
+    --shadow-neon: 0 4px 12px rgba(53, 94, 59, 0.1);
+
+    /* Accents */
+    --accent-primary: #355E3B;
+    /* Hunter Green */
+    --accent-secondary: #2E5233;
+    /* Darker Green */
+    --accent-violet: #4A7A52;
+    /* Replaced violet with green shade for consistency */
+    --accent-hover: #1F3822;
+    /* Darkest Green */
 }
 
 * {
@@ -663,7 +679,7 @@ body::before {
 
 .input-wrapper {
     position: relative;
-    max-width: 850px;
+    max-width: 900px;
     margin: 0 auto;
     transition: all 0.3s ease;
 }
@@ -673,7 +689,7 @@ body::before {
     min-height: 64px;
     max-height: 200px;
     max-width: 100%;
-    padding: 14px 60px 14px 20px;
+    padding: 14px 120px 14px 20px;
     background: rgba(15, 15, 18, 0.6);
     backdrop-filter: blur(25px);
     border: 1px solid var(--border-color);
