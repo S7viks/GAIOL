@@ -656,11 +656,11 @@ body::before {
     min-height: 64px;
     max-height: 200px;
     max-width: 100%;
-    padding: 20px 120px 20px 120px;
-    background: rgba(15, 15, 18, 0.8);
+    padding: 14px 60px 14px 100px;
+    background: rgba(15, 15, 18, 0.6);
     backdrop-filter: blur(25px);
     border: 1px solid var(--border-color);
-    border-radius: 32px;
+    border-radius: 24px;
     font-size: var(--font-size-base);
     font-family: var(--font-heading);
     color: var(--text-primary);
@@ -684,10 +684,10 @@ body::before {
 
 .input-actions {
     position: absolute;
-    left: 20px;
+    left: 12px;
     bottom: 12px;
     display: flex;
-    gap: 12px;
+    gap: 8px;
     z-index: 101;
 }
 
@@ -716,11 +716,11 @@ body::before {
 
 .input-footer {
     position: absolute;
-    right: 20px;
-    bottom: 12px;
+    right: 12px;
+    bottom: 10px;
     display: flex;
     align-items: center;
-    gap: 16px;
+    gap: 12px;
     z-index: 101;
 }
 
@@ -2431,20 +2431,23 @@ body::before {
 
 /* Loading Skeletons */
 .skeleton {
-    background: linear-gradient(
-        90deg,
-        rgba(255, 255, 255, 0.05) 0%,
-        rgba(255, 255, 255, 0.1) 50%,
-        rgba(255, 255, 255, 0.05) 100%
-    );
+    background: linear-gradient(90deg,
+            rgba(255, 255, 255, 0.05) 0%,
+            rgba(255, 255, 255, 0.1) 50%,
+            rgba(255, 255, 255, 0.05) 100%);
     background-size: 200% 100%;
     animation: skeleton-loading 1.5s ease-in-out infinite;
     border-radius: var(--radius-md);
 }
 
 @keyframes skeleton-loading {
-    0% { background-position: 200% 0; }
-    100% { background-position: -200% 0; }
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
 }
 
 .skeleton-text {
@@ -2636,18 +2639,21 @@ body::before {
     left: 0;
     bottom: 0;
     right: 0;
-    background: linear-gradient(
-        90deg,
-        transparent,
-        rgba(255, 255, 255, 0.3),
-        transparent
-    );
+    background: linear-gradient(90deg,
+            transparent,
+            rgba(255, 255, 255, 0.3),
+            transparent);
     animation: shimmer 2s infinite;
 }
 
 @keyframes shimmer {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(100%); }
+    0% {
+        transform: translateX(-100%);
+    }
+
+    100% {
+        transform: translateX(100%);
+    }
 }
 
 /* Keyboard Shortcuts Modal */
@@ -2684,6 +2690,7 @@ body::before {
         opacity: 0;
         transform: translateY(20px);
     }
+
     to {
         opacity: 1;
         transform: translateY(0);
@@ -2781,6 +2788,7 @@ kbd {
         transform: translateX(100%);
         opacity: 0;
     }
+
     to {
         transform: translateX(0);
         opacity: 1;
@@ -2827,7 +2835,7 @@ kbd {
     .mobile-menu-toggle {
         display: flex;
     }
-    
+
     .left-sidebar {
         position: fixed;
         left: -100%;
@@ -2836,11 +2844,11 @@ kbd {
         height: calc(100vh - var(--top-bar-height));
         top: var(--top-bar-height);
     }
-    
+
     .left-sidebar.open {
         left: 0;
     }
-    
+
     .page {
         padding: var(--space-lg);
     }

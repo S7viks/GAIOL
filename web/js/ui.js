@@ -563,7 +563,7 @@ function autoResizeTextarea(textarea) {
     textarea.style.height = 'auto';
 
     // Calculate new height based on content
-    const minHeight = 56; // min-height from CSS
+    const minHeight = 64; // min-height from CSS
     const maxHeight = 200; // max-height from CSS
     const scrollHeight = textarea.scrollHeight;
 
@@ -631,6 +631,20 @@ function renderResults(responses, queryInfo) {
         const container = document.getElementById('resultsSection');
         if (!container) return;
         renderResultsLegacy(responses, queryInfo, container);
+        return;
+    }
+
+    // Show empty state if no messages and no responses
+    if (chatMessages.children.length === 0 && (!responses || Object.keys(responses).length === 0)) {
+        if (typeof renderEmptyState === 'function') {
+            renderEmptyState(chatMessages, {
+                icon: '💬',
+                title: 'No messages yet',
+                description: 'Start a conversation by entering a prompt above. The system will automatically select the best model for your query.',
+                actionText: 'Start Chatting',
+                actionCallback: 'document.getElementById("promptInput")?.focus()'
+            });
+        }
         return;
     }
 

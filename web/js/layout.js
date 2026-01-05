@@ -22,6 +22,12 @@ function renderTopBar(currentPageName = 'Chat') {
                     <span id="healthStatus" class="health-status"></span>
                     <span class="status-text">NETWORK ONLINE</span>
                 </div>
+                <button class="icon-btn tooltip" onclick="if(typeof openShortcutsModal==='function')openShortcutsModal()" aria-label="Keyboard Shortcuts" data-tooltip="Keyboard Shortcuts (⌘/ or Ctrl+/)">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                        <path d="M9 9h6M9 15h6M12 9v6"/>
+                    </svg>
+                </button>
                 <button class="icon-btn" onclick="window.location.href='/settings.html'" aria-label="Settings">
                     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                         <circle cx="12" cy="12" r="3"/>
