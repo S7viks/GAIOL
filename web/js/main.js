@@ -636,6 +636,12 @@ async function executeReasoningQuery() {
     // 4. Start Reasoning Engine
     try {
         setUIState({ loading: true });
+
+        // NOTE: These heavy reasoning features are disabled by default to prevent slowness.
+        // Each of these adds significant sequential LLM calls to the process.
+        const enableReflection = false; // Set to true to enable self-correction
+        const enableBeamSearch = false; // Set to true to enable multi-path exploration
+
         ReasoningEngine.onEvent((event) => {
             component.onEvent(event);
 
@@ -650,13 +656,24 @@ async function executeReasoningQuery() {
 
                     // Save to history
                     const results = { 'ReasoningEngine': { response: event.payload.final_output, success: true } };
-                    saveToHistory(prompt, results, { mode: 'reasoning' });
+                    saveToHistory(prompt, results, { mode: 'reasoning', reflection_enabled: enableReflection });
                 }
                 setUIState({ loading: false });
             }
         });
 
-        await ReasoningEngine.start(prompt, modelIds);
+        // Start reasoning with reflection config
+        await ReasoningEngine.start(prompt, modelIds, {
+            reflection: {
+                enabled: enableReflection,
+                min_quality: 0.75,
+                max_retries: 2
+            },
+            beam: {
+                enabled: enableBeamSearch,
+                beam_width: 2
+            }
+        });
     } catch (error) {
         showError('Reasoning failed', error.message);
         setUIState({ loading: false });

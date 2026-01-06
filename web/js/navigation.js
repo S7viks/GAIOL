@@ -26,7 +26,8 @@ function switchPage(pageId) {
         'settings': '/settings.html',
         'profile': '/profile.html',
         'login': '/login.html',
-        'signup': '/signup.html'
+        'signup': '/signup.html',
+        'observability': '/observability.html'
     };
 
     const targetUrl = pageMap[pageId];
@@ -51,6 +52,7 @@ function loadPageContent(pageId) {
     else if (path.includes('profile.html')) pageId = 'profile';
     else if (path.includes('login.html')) pageId = 'login';
     else if (path.includes('signup.html')) pageId = 'signup';
+    else if (path.includes('observability.html')) pageId = 'observability';
     else pageId = 'chat';
 
     switch (pageId) {

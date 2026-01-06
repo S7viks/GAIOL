@@ -13,6 +13,7 @@ import (
 type DecomposedStep struct {
 	Title     string `json:"title"`
 	Objective string `json:"objective"`
+	TaskType  string `json:"task_type"`
 }
 
 // Decomposer handles breaking down prompts into steps
@@ -55,6 +56,7 @@ func (d *Decomposer) DecomposePrompt(ctx context.Context, prompt string) ([]Reas
 			Index:     i,
 			Title:     rs.Title,
 			Objective: rs.Objective,
+			TaskType:  models.TaskType(rs.TaskType),
 			Status:    "pending",
 		}
 	}

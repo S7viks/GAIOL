@@ -21,7 +21,10 @@ class ReasoningComponent {
             <div class="thought-process-container">
                 <div class="thought-header">
                     <h4><span class="status-dot"></span> Thought Process</h4>
-                    <span class="toggle-icon">▲</span>
+                    <div class="session-cost-badge" style="margin-left: auto; font-size: 10px; color: var(--text-tertiary); padding: 2px 6px; border: 1px solid var(--border-color); border-radius: 4px; display: none;">
+                        $0.000
+                    </div>
+                    <span class="toggle-icon" style="margin-left: 10px;">▲</span>
                 </div>
                 <div class="thought-content">
                     <div class="steps-timeline-mini"></div>
@@ -39,7 +42,8 @@ class ReasoningComponent {
             toggleIcon: this.container.querySelector('.toggle-icon'),
             timeline: this.container.querySelector('.steps-timeline-mini'),
             modelGrid: this.container.querySelector('.model-grid-mini'),
-            detail: this.container.querySelector('.step-detail-mini')
+            detail: this.container.querySelector('.step-detail-mini'),
+            costBadge: this.container.querySelector('.session-cost-badge')
         };
     }
 
@@ -65,15 +69,34 @@ class ReasoningComponent {
                 break;
             case 'step_start':
                 this.activeStepIndex = payload.step_index;
+                const taskType = payload.task_type || 'analyze';
                 this.updateTimeline();
-                this.updateDetail('Current Step: ' + payload.title);
-                this.dom.modelGrid.innerHTML = ''; // Clear for new step
+                this.updateDetail(`[${taskType.toUpperCase()}] ${payload.title}`);
+                this.renderTaskBadge(taskType);
+                this.dom.modelGrid.innerHTML = '';
+                break;
+            case 'rag':
+                this.showRAGDetails(payload);
                 break;
             case 'model_response':
                 this.renderModelOutput(payload);
                 break;
             case 'step_end':
                 this.markStepCompleted(payload);
+                this.updateTotalCost(payload.total_cost);
+                break;
+            case 'reflection':
+                this.showReflectionFeedback(payload);
+                break;
+            case 'refinement':
+                this.showRefinementAttempt(payload);
+                break;
+            case 'beam_update':
+                this.showBeamUpdate(payload);
+                this.updateTotalCost(payload.total_cost);
+                break;
+            case 'consensus':
+                this.showConsensus(payload);
                 break;
             case 'reasoning_end':
                 this.setFinalStatus();
@@ -108,15 +131,80 @@ class ReasoningComponent {
     }
 
     renderModelOutput(payload) {
-        const output = payload.output || payload;
-        const card = document.createElement('div');
-        card.className = 'model-card-mini';
-        const modelName = output.model_id ? output.model_id.split('/').pop() : 'Model';
-        card.innerHTML = `
-            <span class="model-name">${modelName}</span>
-            <div class="model-score">Thinking...</div>
+        if (!this.dom.modelGrid) return;
+
+        const outputDiv = document.createElement('div');
+        outputDiv.className = 'model-output-mini';
+
+        const costStr = payload.cost ? `$${payload.cost.toFixed(4)}` : '';
+        const tokenStr = payload.tokens_used ? `${payload.tokens_used} tokens` : '';
+        const usageInfo = [tokenStr, costStr].filter(x => x).join(' • ');
+
+        outputDiv.innerHTML = `
+            <div class="model-name-row" style="display: flex; justify-content: space-between; align-items: baseline;">
+                <div class="model-name" style="font-weight: 600; font-size: 11px;">${payload.model_id.split('/').pop()}</div>
+                <div class="model-score" style="font-size: 10px; color: var(--accent-color); font-weight: 700;"></div>
+            </div>
+            <div class="model-meta-info" style="font-size: 9px; color: var(--text-tertiary); line-height: 1.2;">
+                ${usageInfo}
+            </div>
         `;
-        this.dom.modelGrid.appendChild(card);
+        this.dom.modelGrid.appendChild(outputDiv);
+    }
+
+    updateTotalCost(cost) {
+        if (!this.dom.costBadge || cost === undefined) return;
+        this.dom.costBadge.textContent = `$${cost.toFixed(4)}`;
+        this.dom.costBadge.style.display = 'block';
+
+        // Cost Alert logic
+        if (cost > 0.04) { // Warning at 80% of default budget ($0.05)
+            this.dom.costBadge.style.borderColor = 'var(--warning-color, orange)';
+            this.dom.costBadge.style.color = 'var(--warning-color, orange)';
+        }
+    }
+
+    showReflectionFeedback(payload) {
+        const qualityPercent = (payload.quality * 100).toFixed(0);
+        const statusIcon = payload.accepted ? '✓' : '⚠️';
+        const statusClass = payload.accepted ? 'success' : 'warning';
+
+        const feedbackHTML = `
+            <div class="reflection-feedback ${statusClass}">
+                <div class="reflection-header">
+                    <span class="reflection-icon">${statusIcon}</span>
+                    <span class="reflection-title">Critic Review</span>
+                    <span class="quality-badge">Quality: ${qualityPercent}%</span>
+                </div>
+                ${payload.issues && payload.issues.length > 0 ? `
+                    <div class="reflection-issues">
+                        <strong>Issues:</strong>
+                        <ul>${payload.issues.map(issue => `<li>${issue}</li>`).join('')}</ul>
+                    </div>
+                ` : ''}
+                ${payload.suggestions && payload.suggestions.length > 0 ? `
+                    <div class="reflection-suggestions">
+                        <strong>Suggestions:</strong>
+                        <ul>${payload.suggestions.map(s => `<li>${s}</li>`).join('')}</ul>
+                    </div>
+                ` : ''}
+            </div>
+        `;
+
+        // Insert before the model grid
+        if (this.dom.modelGrid && this.dom.modelGrid.parentNode) {
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = feedbackHTML;
+            this.dom.modelGrid.parentNode.insertBefore(tempDiv.firstElementChild, this.dom.modelGrid.nextSibling);
+        }
+    }
+
+    showRefinementAttempt(payload) {
+        this.updateDetail(`Refining output (Attempt ${payload.attempt})...`);
+    }
+
+    showBeamUpdate(payload) {
+        this.updateDetail(`Beam Search: Exploring ${payload.active_paths} paths. Best score: ${(payload.best_score * 100).toFixed(0)}%`);
     }
 
     markStepCompleted(payload) {
@@ -130,15 +218,51 @@ class ReasoningComponent {
         // Highlight winner in grid
         if (payload.selected_output) {
             const winnerModelId = payload.selected_output.model_id;
-            const cards = this.dom.modelGrid.querySelectorAll('.model-card-mini');
+            const cards = this.dom.modelGrid.querySelectorAll('.model-output-mini');
             cards.forEach(card => {
                 const name = card.querySelector('.model-name').textContent;
                 if (winnerModelId.includes(name)) {
                     card.classList.add('winner');
-                    const score = payload.selected_output.scores ? (payload.selected_output.scores.overall * 100).toFixed(0) + '%' : 'Selected';
-                    card.querySelector('.model-score').textContent = score + ' Match';
+                    const score = payload.selected_output.scores ? (payload.selected_output.scores.overall * 100).toFixed(0) + '%' : 'Match';
+                    card.querySelector('.model-score').textContent = score;
                 }
             });
+        }
+    }
+
+    renderTaskBadge(type) {
+        const badge = document.createElement('span');
+        badge.className = `task-badge task-badge-${type}`;
+        badge.textContent = type.toUpperCase();
+
+        // Insert into detail as a prefix or separate element
+        if (this.dom.detail) {
+            this.dom.detail.prepend(badge);
+        }
+    }
+
+    showRAGDetails(docs) {
+        if (!docs || docs.length === 0) return;
+
+        const ragDiv = document.createElement('div');
+        ragDiv.className = 'rag-context-mini';
+        ragDiv.innerHTML = `
+            <div class="rag-header">
+                <span class="rag-icon">📚</span>
+                <span>Context retrieved (${docs.length} docs)</span>
+            </div>
+            <div class="rag-docs">
+                ${docs.map(doc => `
+                    <div class="rag-doc-pill" title="${doc.content.substring(0, 500)}...">
+                        ${doc.metadata?.source || 'Document'} (Score: ${(doc.score * 100).toFixed(0)}%)
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        // Insert after detail
+        if (this.dom.detail) {
+            this.dom.detail.after(ragDiv);
         }
     }
 

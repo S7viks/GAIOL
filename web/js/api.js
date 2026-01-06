@@ -81,7 +81,7 @@ async function apiRequest(endpoint, method = 'GET', body = null, retries = 3, re
     for (let i = 0; i < retries; i++) {
         try {
             const response = await fetch(url, options);
-            
+
             if (!response.ok) {
                 let errorData = {};
                 try {
@@ -91,6 +91,12 @@ async function apiRequest(endpoint, method = 'GET', body = null, retries = 3, re
                     errorData = { error: response.statusText || `HTTP ${response.status}`, message: response.statusText || `HTTP ${response.status}` };
                 }
                 const errorMessage = errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText || 'Unknown error'}`;
+
+                // CRITICAL: Immediately throw if 401 Unauthorized - don't retry and waste time
+                if (response.status === 401) {
+                    throw new Error('Authentication required');
+                }
+
                 throw new Error(errorMessage);
             }
 
@@ -154,10 +160,13 @@ async function queryMultipleModels(prompt, modelIds, options = {}) {
     if (!isAuthenticated()) {
         throw new Error('Authentication required. Please sign in to use AI models.');
     }
-    
+
     // Ensure valid token before making authenticated request
-    await ensureValidToken();
-    
+    const valid = await ensureValidToken();
+    if (!valid) {
+        throw new Error('Authentication required. Please sign in to use AI models.');
+    }
+
     const body = {
         prompt,
         models: modelIds,
@@ -180,10 +189,13 @@ async function queryWithSmartRouting(prompt, config = {}) {
     if (!isAuthenticated()) {
         throw new Error('Authentication required. Please sign in to use AI models.');
     }
-    
+
     // Ensure valid token before making authenticated request
-    await ensureValidToken();
-    
+    const valid = await ensureValidToken();
+    if (!valid) {
+        throw new Error('Authentication required. Please sign in to use AI models.');
+    }
+
     const body = {
         prompt,
         strategy: config.strategy || 'free_only',
@@ -207,10 +219,13 @@ async function querySpecificModel(prompt, modelId, options = {}) {
     if (!isAuthenticated()) {
         throw new Error('Authentication required. Please sign in to use AI models.');
     }
-    
+
     // Ensure valid token before making authenticated request
-    await ensureValidToken();
-    
+    const valid = await ensureValidToken();
+    if (!valid) {
+        throw new Error('Authentication required. Please sign in to use AI models.');
+    }
+
     const body = {
         prompt,
         model_id: modelId,
@@ -345,7 +360,7 @@ async function refreshAccessToken() {
         }
         return result.data;
     }
-    
+
     // If refresh fails, clear tokens
     clearTokens();
     throw new Error(result.error || 'Token refresh failed');

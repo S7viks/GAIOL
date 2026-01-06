@@ -3,11 +3,13 @@ package reasoning
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
 
 	"gaiol/internal/models"
+	"gaiol/internal/monitoring"
 
 	"github.com/gorilla/websocket"
 )
@@ -23,6 +25,7 @@ var upgrader = websocket.Upgrader{
 // ReasoningAPI provides HTTP and WS handlers for the reasoning engine
 type ReasoningAPI struct {
 	Engine      *ReasoningEngine
+	Metrics     *monitoring.MetricsService // NEW: For monitoring stats
 	connections map[string][]*websocket.Conn
 	connMu      sync.RWMutex
 }
@@ -31,6 +34,7 @@ type ReasoningAPI struct {
 func NewReasoningAPI(router *models.ModelRouter) *ReasoningAPI {
 	api := &ReasoningAPI{
 		Engine:      NewReasoningEngine(router),
+		Metrics:     monitoring.NewMetricsService(),
 		connections: make(map[string][]*websocket.Conn),
 	}
 
@@ -62,8 +66,10 @@ func (api *ReasoningAPI) HandleStartReasoning(w http.ResponseWriter, r *http.Req
 	}
 
 	var req struct {
-		Prompt string   `json:"prompt"`
-		Models []string `json:"models"`
+		Prompt     string           `json:"prompt"`
+		Models     []string         `json:"models"`
+		Reflection ReflectionConfig `json:"reflection"` // NEW: Accept reflection config
+		Beam       BeamConfig       `json:"beam"`       // NEW: Accept beam config
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -71,7 +77,17 @@ func (api *ReasoningAPI) HandleStartReasoning(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	sessionID := api.Engine.InitSession(req.Prompt)
+	sessionID := api.Engine.InitSession(r.Context(), req.Prompt)
+
+	// Apply reflection config if provided
+	if req.Reflection.Enabled {
+		api.Engine.EnableReflection(req.Reflection)
+	}
+
+	// Apply beam search config if provided
+	if req.Beam.Enabled {
+		api.Engine.EnableBeamSearch(req.Beam)
+	}
 
 	// Run reasoning in a background goroutine
 	go func() {
@@ -151,4 +167,22 @@ func (api *ReasoningAPI) HandleWebSocket(w http.ResponseWriter, r *http.Request)
 		delete(api.connections, sessionID)
 	}
 	api.connMu.Unlock()
+}
+
+// HandleGetStats handles GET /api/monitoring/stats
+func (api *ReasoningAPI) HandleGetStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Refresh stats from DB
+	err := api.Metrics.RefreshStats(r.Context())
+	if err != nil {
+		// Log error but return cached stats if possible
+		fmt.Printf("Error refreshing metrics: %v\n", err)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(api.Metrics.GetStats())
 }

@@ -1,6 +1,7 @@
 package reasoning
 
 import (
+	"gaiol/internal/models"
 	"time"
 )
 
@@ -17,6 +18,9 @@ const (
 	EventReflection     EventType = "reflection" // NEW: Critic feedback
 	EventRefinement     EventType = "refinement" // NEW: Refinement attempt
 	EventReasoningEnd   EventType = "reasoning_end"
+	EventBeamUpdate     EventType = "beam_update"
+	EventConsensus      EventType = "consensus" // NEW: Meta-reasoning consensus
+	EventRAG            EventType = "rag"       // NEW: RAG context retrieval
 	EventError          EventType = "error"
 )
 
@@ -35,9 +39,10 @@ type EventDecomposePayload struct {
 
 // EventStepPayload contains information about the current step
 type EventStepPayload struct {
-	StepIndex int    `json:"step_index"`
-	Title     string `json:"title"`
-	Objective string `json:"objective"`
+	StepIndex int             `json:"step_index"`
+	Title     string          `json:"title"`
+	Objective string          `json:"objective"`
+	TaskType  models.TaskType `json:"task_type"` // NEW: For UI badges
 }
 
 // EventModelPayload contains a model's partial or full response

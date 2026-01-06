@@ -185,9 +185,10 @@ function renderModelPerformance() {
     Object.entries(performanceData).slice(0, 5).forEach(([modelId, data]) => {
         const model = getModels().find(m => (m.id || m.ID) === modelId);
         const modelName = model ? (model.display_name || model.model_name || modelId) : modelId;
+        const safeModelName = modelName || 'Unknown Model';
         html += `
             <div class="model-performance-item">
-                <div class="model-performance-name">${escapeHtml(modelName.substring(0, 20))}</div>
+                <div class="model-performance-name">${escapeHtml((safeModelName || "").substring(0, 20))}</div>
                 <div class="model-performance-metrics">
                     <span>${data.avgTime || 0}ms</span>
                     <span>${((data.successRate || 0) * 100).toFixed(0)}%</span>
@@ -222,9 +223,10 @@ function updateModelRecommendations() {
 
     let html = '';
     recommendations.slice(0, 3).forEach(rec => {
+        const recName = rec.name || rec.id || 'Recommended Model';
         html += `
             <div class="recommendation-item" onclick="selectRecommendedModel('${rec.id}')">
-                ${escapeHtml(rec.name.substring(0, 25))}
+                ${escapeHtml((recName || "").substring(0, 25))}
                 <span class="recommendation-badge">${rec.reason}</span>
             </div>
         `;
@@ -296,7 +298,7 @@ function renderFavorites() {
     favorites.slice(0, 5).forEach(fav => {
         html += `
             <div class="favorite-item" onclick="loadFavorite('${fav.id}')">
-                <div class="favorite-item-name">${escapeHtml(fav.name.substring(0, 25))}</div>
+                <div class="favorite-item-name">${escapeHtml((fav.name || "").substring(0, 25))}</div>
                 <div class="favorite-item-meta">${fav.type}</div>
             </div>
         `;
@@ -317,7 +319,7 @@ function saveCurrentAsFavorite() {
     const name = prompt.trim() || `Model Set ${selectedModels.length}`;
     const favorite = {
         id: Date.now().toString(),
-        name: name.substring(0, 50),
+        name: (name || "").substring(0, 50),
         type: selectedModels.length > 0 ? 'Model Set' : 'Prompt',
         prompt: prompt,
         models: selectedModels,
@@ -636,7 +638,7 @@ function showActiveQueryStatus(models) {
         const modelName = model ? (model.display_name || model.model_name || modelId) : modelId;
         html += `
             <div class="query-status-item">
-                <span style="font-size: 11px;">${escapeHtml(modelName.substring(0, 20))}</span>
+                <span style="font-size: 11px;">${escapeHtml((modelName || "").substring(0, 20))}</span>
                 <span class="query-status-indicator pending"></span>
             </div>
         `;

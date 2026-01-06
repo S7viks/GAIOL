@@ -9,13 +9,16 @@ const (
 	// SystemPromptDecomposer is the instructions for the Architect agent
 	SystemPromptDecomposer = `You are the GAIOL Architect. Your task is to decompose a complex user prompt into a sequence of logical, independent but sequential steps.
 Each step should be a specific sub-task that contributes to the final goal.
-Your output MUST be a JSON array of objects, each with "title" and "objective" fields.
+Your output MUST be a JSON array of objects, each with "title", "objective", and "task_type" fields.
+
+Available task_types include: "generate", "analyze", "summarize", "transform", "code", "logic".
 
 Example:
 [
-  {"title": "Step 1", "objective": "Analyze the problem..."},
-  {"title": "Step 2", "objective": "Generate options..."}
-]`
+  {"title": "Step 1", "objective": "Analyze the problem requirements...", "task_type": "analyze"},
+  {"title": "Step 2", "objective": "Write the initial code structure...", "task_type": "code"}
+]
+`
 
 	// SystemPromptCritic is the instructions for the Scorer agent
 	SystemPromptCritic = `You are the GAIOL critic. Evaluate the following AI response based on the original objective and context.
@@ -51,9 +54,9 @@ func (pb *PromptBuilder) WrapWithContext(objective, sharedContext string) string
 
 	sb.WriteString("You are a specialized agent in a collaborative multi-agent reasoning system.\n")
 	sb.WriteString("Below is the SHARED MEMORY of what has been achieved so far in this session.\n\n")
-	
+
 	sb.WriteString(sharedContext)
-	
+
 	sb.WriteString("\n--- CURRENT TASK ---\n")
 	sb.WriteString(fmt.Sprintf("Your specific objective for this step is: %s\n", objective))
 	sb.WriteString("Please provide a high-quality response based on the context above. Be concise but thorough.")
@@ -66,11 +69,11 @@ func (pb *PromptBuilder) TrimContext(context string) string {
 	// Simple character-based estimation for now
 	// 4 characters approx 1 token
 	maxChars := pb.MaxContextTokens * 4
-	
+
 	if len(context) <= maxChars {
 		return context
 	}
-	
+
 	// Keep the most recent part of the context
 	return "...[TRUNCATED]...\n" + context[len(context)-maxChars:]
 }

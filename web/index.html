@@ -31,21 +31,7 @@
     <link rel="apple-touch-icon" sizes="192x192" href="/favicon-192x192.png">
 
     <link rel="stylesheet" href="/css/styles.css">
-    <script>
-        // Immediate auth check - redirect to login if not authenticated
-        // This runs before page content loads
-        (function () {
-            try {
-                const token = localStorage.getItem('gaiol_access_token');
-                if (!token) {
-                    window.location.href = '/login.html';
-                }
-            } catch (e) {
-                // If localStorage fails, redirect to login
-                window.location.href = '/login.html';
-            }
-        })();
-    </script>
+    <!-- Auth gating handled at interaction time; allow UI to render even when not signed in -->
 </head>
 
 <body>
@@ -74,11 +60,13 @@
                     </div>
                 </div>
 
-                <!-- Chat Messages Area -->
-                <div class="chat-messages" id="chatMessages"></div>
+                <!-- Chat Container (Messages + Input) -->
+                <div class="chat-container">
+                    <!-- Chat Messages Area -->
+                    <div class="chat-messages" id="chatMessages"></div>
 
-                <!-- Chat Input Area -->
-                <div class="chat-input-area">
+                    <!-- Chat Input Area -->
+                    <div class="chat-input-area">
                     <div class="chat-input-wrapper">
                         <textarea id="promptInput" class="chat-input-field" placeholder="Enter your prompt here..."
                             rows="1"></textarea>
@@ -138,6 +126,7 @@
                         </div>
                     </div>
                 </div>
+                </div>
             </div>
         </div>
     </div>
@@ -180,13 +169,7 @@
                 }
             });
 
-            // Check authentication first
-            if (typeof isAuthenticated === 'function' && !isAuthenticated()) {
-                // Redirect to login if not authenticated
-                window.location.href = '/login.html';
-                return;
-            }
-
+            // Render layout even if not authenticated; interactions will gate on auth
             initializeLayout('Chat', 'chat');
         });
     </script>

@@ -2,6 +2,7 @@ package reasoning
 
 import (
 	"context"
+	"fmt"
 
 	"gaiol/internal/models"
 	"gaiol/internal/uaip"
@@ -35,8 +36,17 @@ func NewQueryModel(router *models.ModelRouter) *QueryModel {
 	return &QueryModel{router: router}
 }
 
-// Query executes a simple model query
+// Query executes a simple model query using the specified model ID directly
 func (qm *QueryModel) Query(ctx context.Context, modelID string, prompt string) (string, error) {
+	resp, err := qm.QueryFull(ctx, modelID, prompt)
+	if err != nil {
+		return "", err
+	}
+	return resp.Response, nil
+}
+
+// QueryFull executes a model query and returns full usage/cost info
+func (qm *QueryModel) QueryFull(ctx context.Context, modelID string, prompt string) (QueryResponse, error) {
 	// Convert to UAIP format
 	uaipReq := &uaip.UAIPRequest{
 		Payload: uaip.Payload{
@@ -51,15 +61,38 @@ func (qm *QueryModel) Query(ctx context.Context, modelID string, prompt string) 
 		},
 	}
 
-	// Route and execute
-	resp, err := qm.router.RouteAndExecute(ctx, models.RoutingConfig{
-		Strategy: models.StrategyFreeOnly,
-		Task:     models.TaskGenerate,
-	}, uaipReq)
-
+	registry := qm.router.GetRegistry()
+	modelMeta, err := registry.GetModel(models.ModelID(modelID))
 	if err != nil {
-		return "", err
+		modelMeta, err = registry.GetModel(models.ModelID("openrouter:" + modelID))
+		if err != nil {
+			return QueryResponse{}, fmt.Errorf("model not found: %s", modelID)
+		}
 	}
 
-	return resp.Result.Data, nil
+	adapter := modelMeta.Adapter
+	if adapter == nil {
+		return QueryResponse{}, fmt.Errorf("no adapter for model: %s", modelID)
+	}
+
+	resp, err := adapter.GenerateText(ctx, modelMeta.ModelName, uaipReq)
+	if err != nil {
+		return QueryResponse{}, fmt.Errorf("model execution failed: %w", err)
+	}
+
+	result := QueryResponse{
+		Response: resp.Result.Data,
+	}
+	result.Usage.TotalTokens = resp.Result.TokensUsed
+
+	// Calculate cost if not provided by adapter
+	if resp.Metadata.CostInfo.TotalCost > 0 {
+		result.EstimatedCost = resp.Metadata.CostInfo.TotalCost
+	} else {
+		// Use registry cost info
+		costInfo := modelMeta.CostInfo
+		result.EstimatedCost = (float64(resp.Result.TokensUsed) * costInfo.CostPerToken) + costInfo.CostPerRequest
+	}
+
+	return result, nil
 }

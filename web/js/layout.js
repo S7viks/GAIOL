@@ -70,6 +70,9 @@ function renderLeftSidebar(currentPage = 'chat') {
                 <a href="/history.html" class="nav-item ${currentPage === 'history' ? 'active' : ''}" data-page="history">
                     <span class="nav-text">History</span>
                 </a>
+                <a href="/observability.html" class="nav-item ${currentPage === 'observability' ? 'active' : ''}" data-page="observability">
+                    <span class="nav-text">Observability</span>
+                </a>
                 <a href="/settings.html" class="nav-item ${currentPage === 'settings' ? 'active' : ''}" data-page="settings">
                     <span class="nav-text">Settings</span>
                 </a>

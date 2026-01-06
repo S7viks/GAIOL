@@ -12,13 +12,18 @@ const ReasoningEngine = {
      * Start a new reasoning session
      * @param {string} prompt - The user's input prompt
      * @param {string[]} models - Array of model IDs to use
+     * @param {object} config - Optional configuration (reflection, etc.)
      */
-    async start(prompt, models) {
+    async start(prompt, models, config = {}) {
         try {
             const response = await fetch('/api/reasoning/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, models })
+                body: JSON.stringify({
+                    prompt,
+                    models,
+                    ...config  // Include reflection and other configs
+                })
             });
 
             if (!response.ok) throw new Error('Failed to start reasoning session');
