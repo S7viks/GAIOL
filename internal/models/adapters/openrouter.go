@@ -542,16 +542,31 @@ func (o *OpenRouterAdapter) createErrorResponse(req *uaip.UAIPRequest, err error
 	errorCode := uaip.ErrorCodeInternalError
 	errorType := uaip.ErrorTypeInternal
 	suggestedAction := "retry"
+	userMessage := ""
 
 	errMsg := err.Error()
 	if strings.Contains(errMsg, "rate limit") || strings.Contains(errMsg, "429") {
 		errorCode = uaip.ErrorCodeRateLimit
 		errorType = uaip.ErrorTypeRateLimit
 		suggestedAction = "wait_and_retry"
+		userMessage = "⚠️ Rate limit exceeded. Please wait a few minutes and try again."
 	} else if strings.Contains(errMsg, "unauthorized") || strings.Contains(errMsg, "401") {
 		errorCode = uaip.ErrorCodeAuthFailed
 		errorType = uaip.ErrorTypeAuthentication
 		suggestedAction = "check_api_key"
+		userMessage = "⚠️ Authentication failed. Please check your OpenRouter API key."
+	} else if strings.Contains(errMsg, "402") || strings.Contains(errMsg, "Payment Required") {
+		errorCode = uaip.ErrorCodeAuthFailed
+		errorType = uaip.ErrorTypeAuthentication
+		suggestedAction = "upgrade_account"
+		userMessage = "⚠️ Payment required. This model requires a paid OpenRouter account."
+	} else if strings.Contains(errMsg, "404") || strings.Contains(errMsg, "Not Found") {
+		errorCode = uaip.ErrorCodeModelNotFound
+		errorType = uaip.ErrorTypeModelNotFound
+		suggestedAction = "try_different_model"
+		userMessage = "⚠️ Model not found. Please try a different model."
+	} else {
+		userMessage = fmt.Sprintf("⚠️ Request failed: %s", errMsg)
 	}
 
 	return &uaip.UAIPResponse{
@@ -565,6 +580,9 @@ func (o *OpenRouterAdapter) createErrorResponse(req *uaip.UAIPRequest, err error
 			Code:    uaip.StatusInternalError,
 			Message: "Request failed",
 			Success: false,
+		},
+		Result: uaip.PayloadResult{
+			Data: userMessage, // Include user-friendly message in Result.Data for frontend
 		},
 		Error: &uaip.ErrorInfo{
 			Code:            errorCode,

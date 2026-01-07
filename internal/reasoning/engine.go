@@ -23,6 +23,7 @@ type ReasoningEngine struct {
 	BeamConfig      BeamConfig      // Beam search settings
 	ConsensusConfig ConsensusConfig // Optional consensus
 	ConsensusAgent  *ConsensusAgent // Optional consensus agent
+	Cache           *ResponseCache  // Response caching for performance
 	OnEvent         EventCallback
 }
 
@@ -81,6 +82,7 @@ func NewReasoningEngine(router *models.ModelRouter) *ReasoningEngine {
 		BeamConfig:      DefaultBeamConfig(),
 		ConsensusConfig: DefaultConsensusConfig(),
 		ConsensusAgent:  NewConsensusAgent(NewOrchestrator(router, pb)),
+		Cache:           NewResponseCache(1 * time.Hour), // 1 hour cache TTL
 	}
 }
 
@@ -254,6 +256,11 @@ func (re *ReasoningEngine) executeStep(ctx context.Context, sm *SharedMemory, se
 			copy(newPath, path)
 			newPath = append(newPath, out)
 			newPaths = append(newPaths, newPath)
+		}
+
+		// Cache the best output for this step
+		if re.Cache != nil && len(scoredOutputs) > 0 {
+			re.Cache.Set(sm.Steps[i].Objective, string(sm.Steps[i].TaskType), contextStr, scoredOutputs[0])
 		}
 	}
 

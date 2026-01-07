@@ -90,12 +90,23 @@ func (qm *QueryModel) QueryFullWithTokens(ctx context.Context, modelID string, p
 		return QueryResponse{}, fmt.Errorf("model execution failed: %w", err)
 	}
 
-	if !resp.Status.Success {
+	// Even if status is not successful, check if there's user-friendly error data
+	responseText := resp.Result.Data
+	if responseText == "" && resp.Error != nil {
+		// Use error message as response text so user sees what went wrong
+		responseText = resp.Error.Message
+		if resp.Error.SuggestedAction != "" {
+			responseText += fmt.Sprintf(" (Suggested: %s)", resp.Error.SuggestedAction)
+		}
+	}
+
+	// If still no response text and status failed, return error
+	if responseText == "" && !resp.Status.Success {
 		return QueryResponse{}, fmt.Errorf("model status fail: %s", resp.Status.Message)
 	}
 
 	result := QueryResponse{
-		Response: resp.Result.Data,
+		Response: responseText,
 	}
 	result.Usage.TotalTokens = resp.Result.TokensUsed
 

@@ -1,0 +1,226 @@
+# GAIOL Quick Start Guide
+
+Get up and running with GAIOL in 5 minutes.
+
+---
+
+## Prerequisites
+
+- **Go 1.21+** installed ([Download](https://golang.org/dl/))
+- **OpenRouter API Key** ([Get one here](https://openrouter.ai/))
+- **Terminal/Command Prompt**
+
+---
+
+## Step 1: Clone and Install
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd GAIOL
+
+# Install dependencies
+go mod download
+```
+
+---
+
+## Step 2: Configure Environment
+
+Create a `.env` file in the project root:
+
+```bash
+# Windows (PowerShell)
+New-Item -Path .env -ItemType File
+
+# Linux/Mac
+touch .env
+```
+
+Add your API key:
+
+```env
+OPENROUTER_API_KEY=your-key-here
+```
+
+**Get your OpenRouter API key:**
+1. Go to [openrouter.ai](https://openrouter.ai/)
+2. Sign up or log in
+3. Navigate to Keys section
+4. Create a new key
+5. Copy and paste into `.env`
+
+---
+
+## Step 3: Start the Server
+
+**Option A: Using Go (Recommended)**
+```bash
+go run cmd/web-server/main.go
+```
+
+**Option B: Using Make**
+```bash
+make run
+```
+
+**Option C: Using Scripts**
+- **Windows**: Double-click `start.bat` or run `.\start.bat`
+- **Linux/Mac**: `./start.sh`
+- **PowerShell**: `.\start.ps1`
+
+You should see:
+```
+✅ OpenRouter adapter initialized
+📋 Registry initialized with 150 models
+✅ Model router initialized
+✅ Reasoning API initialized
+🚀 GAIOL Web Server starting on http://localhost:8080
+```
+
+---
+
+## Step 4: Open the Web Interface
+
+Open your browser and navigate to:
+
+```
+http://localhost:8080
+```
+
+You should see the GAIOL chat interface!
+
+---
+
+## Step 5: Test It Out
+
+### Try a Simple Query
+
+1. Type in the chat: "Explain quantum computing in simple terms"
+2. Click "Send" or press Enter
+3. Watch the reasoning engine work its magic!
+
+### Browse Models
+
+1. Click "Models" in the sidebar
+2. Browse available models
+3. Filter by provider, cost, or tags
+4. Click a model to query it directly
+
+### Try Voice Input
+
+1. Click the microphone icon in the chat input
+2. Speak your query
+3. It will be transcribed automatically
+
+### Upload a File
+
+1. Click the attach icon
+2. Select a text file (.txt, .md, .json, .csv)
+3. The file content will be added to your prompt
+
+---
+
+## Next Steps
+
+### Enable Authentication (Optional)
+
+1. Create a Supabase project at [supabase.com](https://supabase.com)
+2. Add to `.env`:
+   ```env
+   SUPABASE_URL=https://your-project.supabase.co
+   SUPABASE_ANON_KEY=your-anon-key
+   ```
+3. Run migrations (see [DATABASE_SETUP.md](DATABASE_SETUP.md))
+4. Restart the server
+
+### Configure Reasoning Engine
+
+Edit `internal/reasoning/engine.go` to customize:
+- Beam search width
+- Consensus strategy
+- Auto-selected models
+
+### Explore the API
+
+```bash
+# Health check
+curl http://localhost:8080/health
+
+# List models
+curl http://localhost:8080/api/models
+
+# Query with smart routing
+curl -X POST http://localhost:8080/api/query/smart \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Hello, world!"}'
+```
+
+---
+
+## Troubleshooting
+
+### Server Won't Start
+
+**Error: "OPENROUTER_API_KEY is required"**
+- Make sure `.env` file exists in project root
+- Check that `OPENROUTER_API_KEY` is set correctly
+- Restart the server
+
+**Error: "Port already in use"**
+- Change port in `.env`: `PORT=8081`
+- Or kill the process using port 8080
+
+### Models Not Loading
+
+- Check your OpenRouter API key is valid
+- Verify internet connection
+- Check OpenRouter service status
+
+### Database Connection Issues
+
+- Authentication is optional - system works without database
+- If you want auth, verify Supabase credentials
+- Check network connectivity to Supabase
+
+---
+
+## Common Commands
+
+```bash
+# Run server
+go run cmd/web-server/main.go
+
+# Build binary
+go build -o gaiol ./cmd/web-server
+
+# Run tests
+go test ./...
+
+# Check health
+curl http://localhost:8080/health
+
+# List models
+curl http://localhost:8080/api/models/free
+```
+
+---
+
+## What's Next?
+
+- **Read the [README.md](README.md)** for comprehensive documentation
+- **Check [API.md](API.md)** for API reference
+- **See [ARCHITECTURE.md](ARCHITECTURE.md)** for system design
+- **Review [FEATURES_IMPLEMENTED.md](FEATURES_IMPLEMENTED.md)** for feature list
+
+---
+
+## Getting Help
+
+- **Documentation**: Check the `.md` files in the repository
+- **Issues**: Open an issue on GitHub
+- **Questions**: Review existing documentation
+
+---
+
+**Happy querying! 🚀**

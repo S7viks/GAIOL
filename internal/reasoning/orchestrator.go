@@ -3,11 +3,12 @@ package reasoning
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"gaiol/internal/models"
+	"gaiol/internal/models/adapters"
+	"gaiol/internal/uaip"
 )
 
 // Orchestrator handles parallel execution of multiple LLMs
@@ -88,12 +89,8 @@ func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, shar
 
 			output, err := o.executeModelWithRetry(mctx, mid, wrappedPrompt, 2)
 			if err != nil {
-				// Send error output instead of silently dropping
-				outputChan <- ModelOutput{
-					ModelID:  mid,
-					Response: fmt.Sprintf("Error: %v", err),
-					Scores:   MetricScores{Overall: 0.0},
-				}
+				// Don't send error outputs - let the fallback logic handle completely failed steps
+				fmt.Printf("⚠️  Model %s failed: %v\n", mid, err)
 				return
 			}
 
@@ -110,16 +107,8 @@ func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, shar
 		results = append(results, out)
 	}
 
-	// ADVANCED ERROR HANDLING: If all models failed (only error outputs)
-	allFailed := true
-	for _, r := range results {
-		if !strings.HasPrefix(r.Response, "Error:") {
-			allFailed = false
-			break
-		}
-	}
-
-	if allFailed && len(effectiveModelIDs) > 0 {
+	// If NO successful results, try fallbacks
+	if len(results) == 0 && len(effectiveModelIDs) > 0 {
 		fmt.Println("🚨 All models failed for step. Attempting fallback to guardian model...")
 		fallbackModel := "anthropic/claude-3-5-sonnet"
 		output, err := o.executeModelWithRetry(ctx, fallbackModel, wrappedPrompt, 1)
@@ -128,9 +117,84 @@ func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, shar
 			return []ModelOutput{output}, nil
 		}
 		fmt.Printf("❌ Fallback guardian model also failed: %v\n", err)
+
+		// Try Ollama as local fallback with EXTENDED timeout
+		fmt.Println("🔄 Trying local Ollama fallback...")
+
+		// Create NEW context with longer timeout for local models (don't inherit 20s timeout!)
+		ollamaCtx, ollamaCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer ollamaCancel()
+
+		ollamaOutput, ollamaErr := o.tryOllamaFallback(ollamaCtx, wrappedPrompt)
+		if ollamaErr == nil {
+			fmt.Println("✅ Ollama fallback succeeded!")
+			return []ModelOutput{ollamaOutput}, nil
+		}
+		fmt.Printf("❌ Ollama fallback also failed: %v\n", ollamaErr)
+	}
+
+	// EMERGENCY FALLBACK: If still no results, create placeholder
+	if len(results) == 0 {
+		fmt.Println("⚠️  No results from any model. Creating emergency fallback response.")
+		results = append(results, ModelOutput{
+			ModelID:   "emergency-fallback",
+			ModelName: "System Fallback",
+			Response:  fmt.Sprintf("[All AI models unavailable]\n\nStep: %s\nObjective: %s\n\nThis step could not be completed because all AI models are currently unavailable due to API rate limits or service issues. Please wait and try again.", step.Title, step.Objective),
+			Scores:    MetricScores{Overall: 0.1},
+			Timestamp: time.Now(),
+		})
 	}
 
 	return results, nil
+}
+
+// tryOllamaFallback attempts to use local Ollama as a last resort
+func (o *Orchestrator) tryOllamaFallback(ctx context.Context, prompt string) (ModelOutput, error) {
+	// Try to import and use Ollama adapter
+	ollamaAdapter := adapters.NewOllamaAdapter("")
+
+	// Check if Ollama is available
+	models, err := ollamaAdapter.CheckAvailability(ctx)
+	if err != nil || len(models) == 0 {
+		return ModelOutput{}, fmt.Errorf("ollama not available: %w", err)
+	}
+
+	// Use first available model
+	modelName := models[0]
+	fmt.Printf("🦙 Using local Ollama model: %s\n", modelName)
+
+	// Create minimal UAIP request
+	uaipReq := &uaip.UAIPRequest{
+		Payload: uaip.Payload{
+			Input: uaip.PayloadInput{
+				Data:   prompt,
+				Format: "text",
+			},
+			OutputRequirements: uaip.OutputRequirements{
+				MaxTokens:   1000,
+				Temperature: 0.7,
+			},
+		},
+	}
+
+	resp, err := ollamaAdapter.GenerateText(ctx, modelName, uaipReq)
+	if err != nil {
+		return ModelOutput{}, err
+	}
+
+	if !resp.Status.Success {
+		return ModelOutput{}, fmt.Errorf("ollama error: %s", resp.Status.Message)
+	}
+
+	return ModelOutput{
+		ModelID:    "ollama:" + modelName,
+		ModelName:  "Ollama " + modelName + " (Local)",
+		Response:   resp.Result.Data,
+		TokensUsed: resp.Result.TokensUsed,
+		Cost:       0.0, // Local is free!
+		Timestamp:  time.Now(),
+		Scores:     MetricScores{Overall: 0.7}, // Decent quality
+	}, nil
 }
 
 // emitEvent sends an event to the callback
@@ -148,6 +212,7 @@ func (o *Orchestrator) emitEvent(ctx context.Context, et EventType, payload inte
 // executeModelWithRetry handles a single model query with retries
 func (o *Orchestrator) executeModelWithRetry(ctx context.Context, modelID, prompt string, maxRetries int) (ModelOutput, error) {
 	var lastErr error
+	var lastResponse QueryResponse
 	for i := 0; i <= maxRetries; i++ {
 		startTime := time.Now()
 		// Use reasoning's QueryModel wrapper
@@ -168,9 +233,29 @@ func (o *Orchestrator) executeModelWithRetry(ctx context.Context, modelID, promp
 			}, nil
 		}
 
+		// If error but response has data (error message), store it
+		if resp.Response != "" {
+			lastResponse = resp
+		}
+
 		lastErr = err
 		// Exponential backoff or simple sleep could be added here
 		time.Sleep(time.Duration(i*100) * time.Millisecond)
+	}
+
+	// If we have a response with error data, return it as ModelOutput instead of error
+	// This allows error messages to be displayed to users
+	if lastResponse.Response != "" {
+		return ModelOutput{
+			ModelID:    modelID,
+			ModelName:  modelID + " (Error)",
+			Response:   lastResponse.Response,
+			TokensUsed: lastResponse.Usage.TotalTokens,
+			Cost:       lastResponse.EstimatedCost,
+			LatencyMs:  0,
+			Timestamp:  time.Now(),
+			Scores:     MetricScores{Overall: 0.0}, // Mark as low quality
+		}, nil
 	}
 
 	return ModelOutput{}, lastErr

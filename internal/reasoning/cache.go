@@ -2,7 +2,7 @@ package reasoning
 
 import (
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -15,100 +15,112 @@ type CachedResponse struct {
 	ExpiresAt time.Time
 }
 
-// IsExpired checks if the cached response has expired
+// IsExpired checks if the cache entry has expired
 func (cr *CachedResponse) IsExpired() bool {
 	return time.Now().After(cr.ExpiresAt)
 }
 
-// ResponseCache provides in-memory caching for model responses
+// ResponseCache provides thread-safe in-memory caching for model responses
 type ResponseCache struct {
 	cache map[string]CachedResponse
 	mu    sync.RWMutex
-	ttl   time.Duration // Time-to-live for cached responses
+	ttl   time.Duration // Time to live for cache entries
 }
 
 // NewResponseCache creates a new response cache with specified TTL
 func NewResponseCache(ttl time.Duration) *ResponseCache {
-	return &ResponseCache{
+	if ttl == 0 {
+		ttl = 1 * time.Hour // Default 1 hour
+	}
+
+	cache := &ResponseCache{
 		cache: make(map[string]CachedResponse),
 		ttl:   ttl,
 	}
+
+	// Start cleanup goroutine to remove expired entries
+	go cache.cleanupExpired()
+
+	return cache
+}
+
+// generateCacheKey creates a deterministic hash key from step parameters
+func (rc *ResponseCache) generateCacheKey(objective, taskType, context string) string {
+	// Combine all inputs that affect the response
+	combined := fmt.Sprintf("%s|%s|%s", objective, taskType, context)
+	hash := sha256.Sum256([]byte(combined))
+	return hex.EncodeToString(hash[:])
 }
 
 // Get retrieves a cached response if it exists and hasn't expired
-func (rc *ResponseCache) Get(stepHash string) (ModelOutput, bool) {
+func (rc *ResponseCache) Get(objective, taskType, context string) (ModelOutput, bool) {
+	key := rc.generateCacheKey(objective, taskType, context)
+
 	rc.mu.RLock()
 	defer rc.mu.RUnlock()
 
-	resp, exists := rc.cache[stepHash]
-	if !exists {
+	cached, exists := rc.cache[key]
+	if !exists || cached.IsExpired() {
 		return ModelOutput{}, false
 	}
 
-	if resp.IsExpired() {
-		// Don't return expired cache entries
-		return ModelOutput{}, false
-	}
-
-	return resp.Output, true
+	return cached.Output, true
 }
 
-// Set stores a response in the cache
-func (rc *ResponseCache) Set(stepHash string, output ModelOutput) {
+// Set stores a model output in the cache
+func (rc *ResponseCache) Set(objective, taskType, context string, output ModelOutput) {
+	key := rc.generateCacheKey(objective, taskType, context)
+
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 
-	rc.cache[stepHash] = CachedResponse{
+	rc.cache[key] = CachedResponse{
 		Output:    output,
 		CachedAt:  time.Now(),
 		ExpiresAt: time.Now().Add(rc.ttl),
 	}
 }
 
-// Clear removes all cached entries
+// cleanupExpired periodically removes expired cache entries
+func (rc *ResponseCache) cleanupExpired() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		rc.mu.Lock()
+		for key, cached := range rc.cache {
+			if cached.IsExpired() {
+				delete(rc.cache, key)
+			}
+		}
+		rc.mu.Unlock()
+	}
+}
+
+// Stats returns cache statistics
+func (rc *ResponseCache) Stats() map[string]int {
+	rc.mu.RLock()
+	defer rc.mu.RUnlock()
+
+	totalEntries := len(rc.cache)
+	expiredCount := 0
+
+	for _, cached := range rc.cache {
+		if cached.IsExpired() {
+			expiredCount++
+		}
+	}
+
+	return map[string]int{
+		"total_entries":   totalEntries,
+		"active_entries":  totalEntries - expiredCount,
+		"expired_entries": expiredCount,
+	}
+}
+
+// Clear removes all cache entries
 func (rc *ResponseCache) Clear() {
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.cache = make(map[string]CachedResponse)
-}
-
-// CleanExpired removes expired entries from the cache
-func (rc *ResponseCache) CleanExpired() int {
-	rc.mu.Lock()
-	defer rc.mu.Unlock()
-
-	count := 0
-	for key, resp := range rc.cache {
-		if resp.IsExpired() {
-			delete(rc.cache, key)
-			count++
-		}
-	}
-	return count
-}
-
-// Size returns the number of cached entries
-func (rc *ResponseCache) Size() int {
-	rc.mu.RLock()
-	defer rc.mu.RUnlock()
-	return len(rc.cache)
-}
-
-// GenerateStepHash creates a deterministic hash for a reasoning step
-// to use as a cache key. This includes the step objective, task type, and context.
-func GenerateStepHash(step ReasoningStep, context string) string {
-	// Create a stable representation of the step for hashing
-	data := struct {
-		Objective string
-		TaskType  string
-		Context   string
-	}{
-		Objective: step.Objective,
-		TaskType:  step.TaskType,
-		Context:   context,
-	}
-
-	jsonData, _ := json.Marshal(data)
-	hash := sha256.Sum256(jsonData)
-	return fmt.Sprintf("%x", hash)
 }

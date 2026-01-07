@@ -59,6 +59,15 @@ func main() {
 		hfAdapter = &DummyAdapter{}
 	}
 
+	// Initialize Ollama adapter for local fallback
+	ollamaAdapter := adapters.NewOllamaAdapter("") // Uses default localhost:11434
+	if models, err := ollamaAdapter.CheckAvailability(context.Background()); err == nil && len(models) > 0 {
+		log.Printf("✅ Ollama available with %d local models: %v", len(models), models)
+		log.Println("💡 Ollama will be used as backup when OpenRouter is rate-limited")
+	} else {
+		log.Println("⚠️  Ollama not running - install from https://ollama.com for local fallback")
+	}
+
 	// Create registry
 	registry = models.NewRegistry(orAdapter, hfAdapter)
 	log.Printf("📋 Registry initialized with %d models", registry.Count())
@@ -557,14 +566,38 @@ func handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 
 	// Extract the final result from the reasoning session
 	finalOutput := ""
-	if sm != nil && len(sm.SelectedPath) > 0 {
-		// Get the last output from the selected path
-		lastOutput := sm.SelectedPath[len(sm.SelectedPath)-1]
-		finalOutput = lastOutput.Response
+	if sm != nil {
+		// Use composer to assemble final output from selected path (handles multi-step)
+		if len(sm.SelectedPath) > 0 {
+			// Use the composer to properly assemble multi-step outputs
+			composer := reasoning.NewComposer()
+			finalOutput = composer.AssembleFinalOutput(sm.SelectedPath)
+		} else if len(sm.Steps) > 0 {
+			// If no selected path but we have steps, try to extract from step outputs
+			for i := len(sm.Steps) - 1; i >= 0; i-- {
+				if sm.Steps[i].SelectedOutput != nil && sm.Steps[i].SelectedOutput.Response != "" {
+					finalOutput = sm.Steps[i].SelectedOutput.Response
+					break
+				}
+				// Also check all model outputs in case selected output is nil
+				if len(sm.Steps[i].ModelOutputs) > 0 {
+					for _, out := range sm.Steps[i].ModelOutputs {
+						if out.Response != "" {
+							finalOutput = out.Response
+							break
+						}
+					}
+					if finalOutput != "" {
+						break
+					}
+				}
+			}
+		}
 	}
 
+	// If still empty, provide a helpful error message
 	if finalOutput == "" {
-		finalOutput = "The reasoning engine completed but produced no output."
+		finalOutput = "⚠️ All AI models are currently unavailable due to API rate limits or service issues.\n\nPossible causes:\n- OpenRouter API rate limit exceeded (429 errors)\n- API key issues or payment required (402 errors)\n- Model not found (404 errors)\n- Ollama service unavailable or timing out\n\nPlease wait a few minutes and try again, or check your API keys and service status."
 	}
 
 	log.Printf("✅ Reasoning completed successfully")
