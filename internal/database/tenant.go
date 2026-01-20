@@ -11,7 +11,7 @@ func (c *Client) GetTenantInfo(ctx context.Context, userID string) (*TenantConte
 	// TODO: Implement actual database query using Supabase Go client
 	// For now, return default tenant context (user ID as tenant ID)
 	// This will be enhanced once we verify the exact Supabase Go client API
-	
+
 	// Default behavior: single-tenant mode (user ID = tenant ID)
 	// This is safe and will work until we implement the full database query
 	return &TenantContext{

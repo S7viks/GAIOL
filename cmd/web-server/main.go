@@ -30,6 +30,7 @@ var (
 	dbAvailable  bool
 	authAPI      *auth.AuthAPI
 	reasoningAPI *reasoning.ReasoningAPI
+	worldModel   *reasoning.WorldModel // NEW
 	metrics      *monitoring.MetricsService
 )
 
@@ -39,38 +40,34 @@ func main() {
 		log.Printf("Warning: Failed to load .env file: %v", err)
 	}
 
-	// Initialize adapters
-	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
-	hfKey := os.Getenv("HUGGINGFACE_API_KEY")
+	// Initialize model adapters
+	fmt.Println("🔧 Initializing model adapters...")
 
-	if openRouterKey == "" {
-		log.Fatal("❌ OPENROUTER_API_KEY is required")
-	}
-
-	var orAdapter, hfAdapter models.ModelAdapter
-	orAdapter = adapters.NewOpenRouterAdapter("", openRouterKey)
-	log.Println("✅ OpenRouter adapter initialized")
-
-	if hfKey != "" {
-		hfAdapter = adapters.NewHuggingFaceAdapter("", hfKey)
-		log.Println("✅ HuggingFace adapter initialized")
+	// 1. OLLAMA FIRST (local, fast, unlimited)
+	ollamaAdapter := adapters.NewOllamaAdapter("")
+	ollamaModels, ollamaErr := ollamaAdapter.CheckAvailability(context.Background())
+	if ollamaErr == nil && len(ollamaModels) > 0 {
+		fmt.Printf("✅ Ollama available with %d local models: %v\n", len(ollamaModels), ollamaModels)
+		fmt.Println("💡 Ollama will be used as PRIMARY provider (unlimited, fast)")
 	} else {
-		// Use dummy adapter if HF not available
-		hfAdapter = &DummyAdapter{}
+		fmt.Printf("⚠️ Ollama not available: %v\n", ollamaErr)
+		fmt.Println("💡 Install Ollama and run: ollama pull llama3.2")
+		ollamaAdapter = nil
 	}
 
-	// Initialize Ollama adapter for local fallback
-	ollamaAdapter := adapters.NewOllamaAdapter("") // Uses default localhost:11434
-	if models, err := ollamaAdapter.CheckAvailability(context.Background()); err == nil && len(models) > 0 {
-		log.Printf("✅ Ollama available with %d local models: %v", len(models), models)
-		log.Println("💡 Ollama will be used as backup when OpenRouter is rate-limited")
-	} else {
-		log.Println("⚠️  Ollama not running - install from https://ollama.com for local fallback")
-	}
+	// 2. HuggingFace (free API, backup)
+	hfAPIKey := os.Getenv("HUGGINGFACE_API_KEY")
+	hfAdapter := adapters.NewHuggingFaceAdapter("", hfAPIKey)
+	fmt.Println("✅ HuggingFace adapter initialized (backup provider)")
 
-	// Create registry
-	registry = models.NewRegistry(orAdapter, hfAdapter)
-	log.Printf("📋 Registry initialized with %d models", registry.Count())
+	// 3. OpenRouter (last resort due to rate limits)
+	openRouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
+	openRouterAdapter := adapters.NewOpenRouterAdapter("", openRouterAPIKey)
+	fmt.Println("✅ OpenRouter adapter initialized (fallback only)")
+
+	// Create registry with priority: Ollama > HF > OpenRouter
+	registry = models.NewRegistry(openRouterAdapter, hfAdapter, ollamaAdapter)
+	fmt.Printf("📋 Registry initialized with %d models\n", registry.Count())
 
 	// Initialize database (optional)
 	var tracker *models.PerformanceTracker
@@ -109,6 +106,10 @@ func main() {
 	// Create router
 	router = models.NewModelRouter(registry, tracker)
 	log.Println("✅ Model router initialized")
+
+	// Initialize World Model (NEW)
+	worldModel = reasoning.NewWorldModel(dbClient)
+	log.Println("✅ World Model initialized")
 
 	// Initialize reasoning API
 	reasoningAPI = reasoning.NewReasoningAPI(router)
@@ -211,6 +212,22 @@ func registerRoutes() {
 	http.HandleFunc("/api/reasoning/status/", cors(handleReasoningStatus))
 	http.HandleFunc("/api/reasoning/ws", cors(handleReasoningWebSocket))
 	http.HandleFunc("/api/monitoring/stats", cors(handleMonitoringStats))
+
+	// 6. World Model Routes (NEW)
+	http.HandleFunc("/api/world-model/facts", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelFacts(w, r)
+	}))
+	http.HandleFunc("/api/world-model/store", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelStore(w, r)
+	}))
+	http.HandleFunc("/api/world-model/search", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelSearch(w, r)
+	}))
+
+	// 7. Multi-Agent Workflow Route (updated to use world model)
+	http.HandleFunc("/api/agent/workflow", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleAgentWorkflow(w, r)
+	}))
 }
 
 // ============================================================================
@@ -1055,6 +1072,122 @@ func handleReasoningWebSocket(w http.ResponseWriter, r *http.Request) {
 
 func handleMonitoringStats(w http.ResponseWriter, r *http.Request) {
 	reasoningAPI.HandleGetStats(w, r)
+}
+
+// ============================================================================
+// World Model Routes (NEW)
+// ============================================================================
+
+// Get all facts from world model
+func handleWorldModelFacts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	facts := worldModel.ListAll()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"facts": facts,
+		"count": len(facts),
+	})
+}
+
+// Store a fact manually
+func handleWorldModelStore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key       string `json:"key"`
+		Value     string `json:"value"`
+		Source    string `json:"source"`
+		SessionID string `json:"session_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	err := worldModel.Store(r.Context(), req.Key, req.Value, req.Source, req.SessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Fact stored successfully",
+	})
+}
+
+// Search world model
+func handleWorldModelSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "Query parameter 'q' is required", http.StatusBadRequest)
+		return
+	}
+
+	facts := worldModel.Search(r.Context(), query, 10)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query": query,
+		"facts": facts,
+		"count": len(facts),
+	})
+}
+
+// Handle multi-agent workflow
+func handleAgentWorkflow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Prompt string `json:"prompt"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Create session
+	sessionID := reasoningAPI.Engine.InitSession(r.Context(), req.Prompt)
+
+	// Create simple workflow with world model (NEW: pass worldModel)
+	workflow := reasoning.NewSimpleAgentWorkflow(reasoningAPI.Engine.Orchestrator.Router, sessionID, worldModel)
+	workflow.OnEvent = reasoningAPI.BroadcastEvent
+
+	// Execute workflow synchronously (caller can use WS for events)
+	result, err := workflow.Execute(r.Context(), req.Prompt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return result
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id":   sessionID,
+		"final_output": result.FinalOutput,
+		"steps":        result.Steps,
+		"duration_ms":  result.Duration.Milliseconds(),
+		"agent_count":  len(result.Steps),
+	})
 }
 
 // ============================================================================

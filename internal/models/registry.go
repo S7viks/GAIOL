@@ -31,16 +31,18 @@ type Registry struct {
 }
 
 // NewRegistry creates and initializes a new model registry
-func NewRegistry(openRouterAdapter, hfAdapter ModelAdapter) *Registry {
+func NewRegistry(openRouterAdapter, hfAdapter, ollamaAdapter ModelAdapter) *Registry {
 	r := &Registry{
 		models: make(map[ModelID]ModelMetadata),
 	}
 
-	// Register all OpenRouter models
-	r.registerOpenRouterModels(openRouterAdapter)
+	// Register in priority order: Ollama > HF > OpenRouter
+	if ollamaAdapter != nil {
+		r.registerOllamaModels(ollamaAdapter)
+	}
 
-	// Register all HuggingFace models
 	r.registerHuggingFaceModels(hfAdapter)
+	r.registerOpenRouterModels(openRouterAdapter)
 
 	return r
 }
@@ -232,6 +234,64 @@ func (r *Registry) registerHuggingFaceModels(adapter ModelAdapter) {
 		r.models[id] = ModelMetadata{
 			ID:            id,
 			Provider:      "huggingface",
+			ModelName:     modelName,
+			DisplayName:   info.DisplayName,
+			CostInfo:      CostInfo{CostPerToken: info.CostPerToken},
+			Capabilities:  info.Capabilities,
+			QualityScore:  info.QualityScore,
+			ContextWindow: info.ContextWindow,
+			MaxTokens:     info.MaxTokens,
+			Tags:          info.Tags,
+			Adapter:       adapter,
+		}
+	}
+}
+
+// registerOllamaModels adds local Ollama models to the registry
+func (r *Registry) registerOllamaModels(adapter ModelAdapter) {
+	ollamaModels := map[string]struct {
+		DisplayName   string
+		Capabilities  []TaskType
+		MaxTokens     int
+		ContextWindow int
+		QualityScore  float64
+		CostPerToken  float64
+		Tags          []string
+	}{
+		"llama3.2:latest": {
+			DisplayName:   "Llama 3.2 (Local)",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskCode, TaskSummarize},
+			MaxTokens:     2048,
+			ContextWindow: 8192,
+			QualityScore:  0.85, // Good quality
+			CostPerToken:  0.0,  // FREE
+			Tags:          []string{"free", "local", "fast", "llama"},
+		},
+		"llama3.1:latest": {
+			DisplayName:   "Llama 3.1 (Local)",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskCode, TaskLogic},
+			MaxTokens:     2048,
+			ContextWindow: 8192,
+			QualityScore:  0.88,
+			CostPerToken:  0.0,
+			Tags:          []string{"free", "local", "fast", "llama"},
+		},
+		"codellama:latest": {
+			DisplayName:   "CodeLlama (Local)",
+			Capabilities:  []TaskType{TaskCode, TaskGenerate, TaskAnalyze},
+			MaxTokens:     2048,
+			ContextWindow: 8192,
+			QualityScore:  0.82,
+			CostPerToken:  0.0,
+			Tags:          []string{"free", "local", "code"},
+		},
+	}
+
+	for modelName, info := range ollamaModels {
+		id := ModelID("ollama:" + modelName)
+		r.models[id] = ModelMetadata{
+			ID:            id,
+			Provider:      "ollama",
 			ModelName:     modelName,
 			DisplayName:   info.DisplayName,
 			CostInfo:      CostInfo{CostPerToken: info.CostPerToken},

@@ -69,9 +69,26 @@ type Usage struct {
 }
 
 type APIError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    string `json:"code"`
+	Message string      `json:"message"`
+	Type    string      `json:"type"`
+	Code    interface{} `json:"code"` // Can be string or number from OpenRouter
+}
+
+// GetCode returns the error code as a string, handling both string and number types
+func (e *APIError) GetCode() string {
+	if e == nil {
+		return ""
+	}
+	switch v := e.Code.(type) {
+	case string:
+		return v
+	case float64:
+		return fmt.Sprintf("%.0f", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // NewOpenRouterAdapter creates a new OpenRouter adapter
@@ -326,18 +343,28 @@ func (o *OpenRouterAdapter) callOpenRouterAPI(ctx context.Context, req *OpenRout
 		return nil, fmt.Errorf("OpenRouter API key invalid or expired (401)")
 	}
 
+	// Read body first so we can use it for both decoding and error messages
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
 	var orResp OpenRouterResponse
-	if err := json.NewDecoder(resp.Body).Decode(&orResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+	if err := json.Unmarshal(bodyBytes, &orResp); err != nil {
+		// If JSON decode fails, return the raw body in error message
+		return nil, fmt.Errorf("failed to decode response: %w (body: %s)", err, string(bodyBytes))
 	}
 
 	if orResp.Error != nil {
-		return nil, fmt.Errorf("OpenRouter API error: %s", orResp.Error.Message)
+		errorCode := orResp.Error.GetCode()
+		errorMsg := orResp.Error.Message
+		if errorCode != "" {
+			return nil, fmt.Errorf("OpenRouter API error [code: %s]: %s", errorCode, errorMsg)
+		}
+		return nil, fmt.Errorf("OpenRouter API error: %s", errorMsg)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		// Read body for error details
-		bodyBytes, _ := io.ReadAll(resp.Body)
 		fmt.Printf("❌ OpenRouter API failed with HTTP %d: %s\n", resp.StatusCode, string(bodyBytes))
 		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, resp.Status)
 	}
@@ -562,7 +589,7 @@ func (o *OpenRouterAdapter) createErrorResponse(req *uaip.UAIPRequest, err error
 		userMessage = "⚠️ Payment required. This model requires a paid OpenRouter account."
 	} else if strings.Contains(errMsg, "404") || strings.Contains(errMsg, "Not Found") {
 		errorCode = uaip.ErrorCodeModelNotFound
-		errorType = uaip.ErrorTypeModelNotFound
+		errorType = uaip.ErrorTypeModelUnavailable
 		suggestedAction = "try_different_model"
 		userMessage = "⚠️ Model not found. Please try a different model."
 	} else {
@@ -581,7 +608,7 @@ func (o *OpenRouterAdapter) createErrorResponse(req *uaip.UAIPRequest, err error
 			Message: "Request failed",
 			Success: false,
 		},
-		Result: uaip.PayloadResult{
+		Result: uaip.Result{
 			Data: userMessage, // Include user-friendly message in Result.Data for frontend
 		},
 		Error: &uaip.ErrorInfo{

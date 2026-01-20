@@ -30,7 +30,7 @@ func DefaultConsensusConfig() ConsensusConfig {
 		Enabled:   true, // Enabled by default for better consensus
 		Strategy:  StrategyMetaAgent,
 		MetaModel: "openrouter:google/gemini-2.0-flash-exp:free", // Use free model for consensus
-		Threshold: 0.6, // Lower threshold to trigger more often
+		Threshold: 0.6,                                           // Lower threshold to trigger more often
 	}
 }
 

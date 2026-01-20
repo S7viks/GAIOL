@@ -12,7 +12,7 @@ import (
 // This uses a dummy adapter so tests don't need real API keys
 func NewMockRouter() *models.ModelRouter {
 	dummyAdapter := &DummyAdapter{}
-	registry := models.NewRegistry(dummyAdapter, dummyAdapter)
+	registry := models.NewRegistry(dummyAdapter, dummyAdapter, dummyAdapter)
 	return models.NewModelRouter(registry, nil) // nil tracker for testing
 }
 

@@ -3,6 +3,8 @@ package reasoning
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,18 +30,16 @@ func NewOrchestrator(router *models.ModelRouter, pb *PromptBuilder) *Orchestrato
 	}
 }
 
-// ExecuteStep runs parallel models for a given step and handles routing
+// ExecuteStep runs parallel models with FAST FAIL and circuit breaking
 func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, sharedContext string, modelIDs []string, config SessionConfig) ([]ModelOutput, error) {
-	var wg sync.WaitGroup
-	// Handle dynamic model selection if "auto" is requested or no models provided
+	// PERFORMANCE: Use parent context timeout (don't create new one)
 	effectiveModelIDs := modelIDs
 	if len(modelIDs) == 0 || (len(modelIDs) == 1 && modelIDs[0] == "auto") {
 		strategy := models.StrategyHighestQuality
 
-		// Map priority profile to routing strategy
 		switch config.PriorityProfile {
 		case "speed":
-			strategy = models.StrategyLowestCost // Assuming lower cost models are faster or we want to save budget for speed
+			strategy = models.StrategyFreeOnly // FREE = FASTER
 		case "balanced":
 			strategy = models.StrategyBalanced
 		}
@@ -47,26 +47,31 @@ func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, shar
 		routeConfig := models.RoutingConfig{
 			Strategy: strategy,
 			Task:     step.TaskType,
-			MaxCost:  config.BudgetLimit, // Use budget as cost constraint
+			MaxCost:  config.BudgetLimit,
 		}
-		// Default to logic if not specified
 		if routeConfig.Task == "" {
 			routeConfig.Task = models.TaskAnalyze
 		}
 
 		model, err := o.Router.Route(routeConfig)
 		if err != nil {
-			fmt.Printf("⚠️ Dynamic routing failed for task %s, falling back to default: %v\n", step.TaskType, err)
-			effectiveModelIDs = []string{"anthropic/claude-3-5-sonnet"} // Safe fallback
+			fmt.Printf("⚠️ Dynamic routing failed, using fallback\n")
+			effectiveModelIDs = []string{"google/gemini-2.0-flash-exp:free"} // Fast free model
 		} else {
 			effectiveModelIDs = []string{string(model.ID)}
-			fmt.Printf("🎯 Dynamic routing selected %s for task %s\n", model.ID, step.TaskType)
 		}
 	}
 
+	// PERFORMANCE FIX: Use buffered channel + first-responder wins
 	outputChan := make(chan ModelOutput, len(effectiveModelIDs))
+	doneChan := make(chan struct{}) // Signal when we have enough results
 
-	// Wrap the objective with shared context
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	successCount := 0
+	maxSuccess := 1 // CRITICAL: Only wait for FIRST success, not all models
+
+	// RAG augmentation (optional)
 	prompt := step.Objective
 	if o.RAG != nil {
 		if augmented, docs, err := o.RAG.AugmentPrompt(ctx, prompt); err == nil {
@@ -78,123 +83,160 @@ func (o *Orchestrator) ExecuteStep(ctx context.Context, step ReasoningStep, shar
 	}
 	wrappedPrompt := o.PromptBuilder.WrapWithContext(prompt, sharedContext)
 
+	// Launch models in parallel
 	for _, modelID := range effectiveModelIDs {
 		wg.Add(1)
 		go func(mid string) {
 			defer wg.Done()
 
-			// Add timeout per model query (reduced to 20s for faster feedback)
-			mctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+			// Check if we already have enough results
+			select {
+			case <-doneChan:
+				return // Skip execution
+			default:
+			}
+
+			// AGGRESSIVE TIMEOUT: 5 seconds max per model
+			mctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
 
-			output, err := o.executeModelWithRetry(mctx, mid, wrappedPrompt, 2)
+			output, err := o.executeModelWithRetry(mctx, mid, wrappedPrompt, 1) // Only 1 retry
 			if err != nil {
-				// Don't send error outputs - let the fallback logic handle completely failed steps
-				fmt.Printf("⚠️  Model %s failed: %v\n", mid, err)
+				fmt.Printf("⚠️ Model %s failed: %v\n", mid, err)
 				return
 			}
 
-			outputChan <- output
+			// Validate response quality
+			if output.Response != "" &&
+				!strings.Contains(output.Response, "⚠️") &&
+				!strings.Contains(output.Response, "Request failed") &&
+				len(output.Response) > 10 { // Must be substantial
+
+				mu.Lock()
+				successCount++
+				if successCount >= maxSuccess {
+					close(doneChan) // Signal others to stop
+				}
+				mu.Unlock()
+
+				outputChan <- output
+			}
 		}(modelID)
 	}
 
-	// Wait for all models to finish or context to be cancelled
-	wg.Wait()
-	close(outputChan)
+	// Wait for first success OR all to finish (whichever comes first)
+	go func() {
+		wg.Wait()
+		close(outputChan)
+	}()
 
-	var results []ModelOutput
-	for out := range outputChan {
-		results = append(results, out)
+	// Collect results with timeout
+	results := make([]ModelOutput, 0)
+	timeout := time.After(10 * time.Second) // MAX 10s for entire step
+
+	for {
+		select {
+		case output, ok := <-outputChan:
+			if !ok {
+				goto DONE // Channel closed
+			}
+			if output.Scores.Overall > 0.0 {
+				results = append(results, output)
+				if len(results) >= maxSuccess {
+					goto DONE // Got enough results
+				}
+			}
+		case <-timeout:
+			fmt.Println("⚠️ Step timeout after 10s")
+			goto DONE
+		case <-ctx.Done():
+			fmt.Println("⚠️ Context cancelled")
+			goto DONE
+		}
 	}
 
-	// If NO successful results, try fallbacks
+DONE:
+	// If NO successful results, try fallbacks IN ORDER
 	if len(results) == 0 && len(effectiveModelIDs) > 0 {
-		fmt.Println("🚨 All models failed for step. Attempting fallback to guardian model...")
-		fallbackModel := "anthropic/claude-3-5-sonnet"
-		output, err := o.executeModelWithRetry(ctx, fallbackModel, wrappedPrompt, 1)
-		if err == nil {
-			output.ModelName += " (Fallback)"
-			return []ModelOutput{output}, nil
-		}
-		fmt.Printf("❌ Fallback guardian model also failed: %v\n", err)
+		fmt.Println("🚨 All models failed for step. Attempting fallbacks...")
 
-		// Try Ollama as local fallback with EXTENDED timeout
-		fmt.Println("🔄 Trying local Ollama fallback...")
-
-		// Create NEW context with longer timeout for local models (don't inherit 20s timeout!)
-		ollamaCtx, ollamaCancel := context.WithTimeout(context.Background(), 120*time.Second)
+		// FALLBACK 1: Ollama (local, fast)
+		fmt.Println("🏠 Trying local Ollama fallback...")
+		ollamaCtx, ollamaCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer ollamaCancel()
 
-		ollamaOutput, ollamaErr := o.tryOllamaFallback(ollamaCtx, wrappedPrompt)
-		if ollamaErr == nil {
-			fmt.Println("✅ Ollama fallback succeeded!")
-			return []ModelOutput{ollamaOutput}, nil
-		}
-		fmt.Printf("❌ Ollama fallback also failed: %v\n", ollamaErr)
-	}
+		ollamaAdapter := adapters.NewOllamaAdapter("")
+		ollamaModels, err := ollamaAdapter.CheckAvailability(ollamaCtx)
+		if err == nil && len(ollamaModels) > 0 {
+			// Try first available local model
+			modelName := ollamaModels[0]
+			fmt.Printf("🦙 Using local Ollama model: %s\n", modelName)
 
-	// EMERGENCY FALLBACK: If still no results, create placeholder
-	if len(results) == 0 {
-		fmt.Println("⚠️  No results from any model. Creating emergency fallback response.")
-		results = append(results, ModelOutput{
-			ModelID:   "emergency-fallback",
-			ModelName: "System Fallback",
-			Response:  fmt.Sprintf("[All AI models unavailable]\n\nStep: %s\nObjective: %s\n\nThis step could not be completed because all AI models are currently unavailable due to API rate limits or service issues. Please wait and try again.", step.Title, step.Objective),
-			Scores:    MetricScores{Overall: 0.1},
-			Timestamp: time.Now(),
-		})
+			uaipReq := &uaip.UAIPRequest{
+				Payload: uaip.Payload{
+					Input: uaip.PayloadInput{
+						Data:   wrappedPrompt,
+						Format: "text",
+					},
+					OutputRequirements: uaip.OutputRequirements{
+						MaxTokens:   1000,
+						Temperature: 0.7,
+					},
+				},
+			}
+
+			resp, err := ollamaAdapter.GenerateText(ollamaCtx, modelName, uaipReq)
+			if err == nil && resp.Status.Success {
+				fmt.Println("✅ Ollama fallback succeeded!")
+				return []ModelOutput{{
+					ModelID:    "ollama:" + modelName,
+					ModelName:  "Ollama " + modelName + " (Local)",
+					Response:   resp.Result.Data,
+					TokensUsed: resp.Result.TokensUsed,
+					Cost:       0.0,
+					Timestamp:  time.Now(),
+					Scores:     MetricScores{Overall: 0.7},
+				}}, nil
+			}
+		}
+		fmt.Printf("⚠️ Ollama fallback failed: %v\n", err)
+
+		// FALLBACK 2: HuggingFace
+		fmt.Println("🤗 Trying HuggingFace fallback...")
+		hfAdapter := adapters.NewHuggingFaceAdapter("", os.Getenv("HUGGINGFACE_API_KEY"))
+		hfCtx, hfCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer hfCancel()
+
+		hfReq := &uaip.UAIPRequest{
+			Payload: uaip.Payload{
+				Input: uaip.PayloadInput{
+					Data:   wrappedPrompt,
+					Format: "text",
+				},
+				OutputRequirements: uaip.OutputRequirements{
+					MaxTokens:   500,
+					Temperature: 0.7,
+				},
+			},
+		}
+
+		hfResp, hfErr := hfAdapter.GenerateText(hfCtx, "mistralai/Mistral-7B-Instruct-v0.2", hfReq)
+		if hfErr == nil && hfResp.Status.Success {
+			fmt.Println("✅ HuggingFace fallback succeeded!")
+			return []ModelOutput{{
+				ModelID:    "huggingface:mistral",
+				ModelName:  "Mistral 7B (HF)",
+				Response:   hfResp.Result.Data,
+				TokensUsed: hfResp.Result.TokensUsed,
+				Cost:       0.0,
+				Timestamp:  time.Now(),
+				Scores:     MetricScores{Overall: 0.65},
+			}}, nil
+		}
+		fmt.Printf("⚠️ HuggingFace fallback failed: %v\n", hfErr)
 	}
 
 	return results, nil
-}
-
-// tryOllamaFallback attempts to use local Ollama as a last resort
-func (o *Orchestrator) tryOllamaFallback(ctx context.Context, prompt string) (ModelOutput, error) {
-	// Try to import and use Ollama adapter
-	ollamaAdapter := adapters.NewOllamaAdapter("")
-
-	// Check if Ollama is available
-	models, err := ollamaAdapter.CheckAvailability(ctx)
-	if err != nil || len(models) == 0 {
-		return ModelOutput{}, fmt.Errorf("ollama not available: %w", err)
-	}
-
-	// Use first available model
-	modelName := models[0]
-	fmt.Printf("🦙 Using local Ollama model: %s\n", modelName)
-
-	// Create minimal UAIP request
-	uaipReq := &uaip.UAIPRequest{
-		Payload: uaip.Payload{
-			Input: uaip.PayloadInput{
-				Data:   prompt,
-				Format: "text",
-			},
-			OutputRequirements: uaip.OutputRequirements{
-				MaxTokens:   1000,
-				Temperature: 0.7,
-			},
-		},
-	}
-
-	resp, err := ollamaAdapter.GenerateText(ctx, modelName, uaipReq)
-	if err != nil {
-		return ModelOutput{}, err
-	}
-
-	if !resp.Status.Success {
-		return ModelOutput{}, fmt.Errorf("ollama error: %s", resp.Status.Message)
-	}
-
-	return ModelOutput{
-		ModelID:    "ollama:" + modelName,
-		ModelName:  "Ollama " + modelName + " (Local)",
-		Response:   resp.Result.Data,
-		TokensUsed: resp.Result.TokensUsed,
-		Cost:       0.0, // Local is free!
-		Timestamp:  time.Now(),
-		Scores:     MetricScores{Overall: 0.7}, // Decent quality
-	}, nil
 }
 
 // emitEvent sends an event to the callback

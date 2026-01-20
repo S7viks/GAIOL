@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"gaiol/internal/models"
 	"gaiol/internal/uaip"
 )
 
@@ -26,7 +27,7 @@ func NewOllamaAdapter(baseURL string) *OllamaAdapter {
 
 	return &OllamaAdapter{
 		baseURL: baseURL,
-		client:  &http.Client{Timeout: 120 * time.Second}, // Local models can be slow
+		client:  &http.Client{Timeout: 30 * time.Second}, // 30s for local
 	}
 }
 
@@ -45,6 +46,58 @@ type OllamaResponse struct {
 	Response  string    `json:"response"`
 	Done      bool      `json:"done"`
 	Context   []int     `json:"context,omitempty"`
+}
+
+// Implement ModelAdapter interface
+
+func (o *OllamaAdapter) Name() string {
+	return "ollama"
+}
+
+func (o *OllamaAdapter) Provider() string {
+	return "ollama"
+}
+
+func (o *OllamaAdapter) SupportedTasks() []models.TaskType {
+	return []models.TaskType{
+		models.TaskGenerate,
+		models.TaskAnalyze,
+		models.TaskCode,
+		models.TaskSummarize,
+		models.TaskLogic,
+	}
+}
+
+func (o *OllamaAdapter) RequiresAuth() bool {
+	return false // Local, no auth needed
+}
+
+func (o *OllamaAdapter) GetCapabilities() models.ModelCapabilities {
+	return models.ModelCapabilities{
+		MaxTokens:         2048,
+		SupportsStreaming: false,
+		Languages:         []string{"en", "zh", "es", "fr", "de"},
+		ContextWindow:     8192,
+		QualityScore:      0.85,
+		Multimodal:        false,
+	}
+}
+
+func (o *OllamaAdapter) GetCost() models.CostInfo {
+	return models.CostInfo{
+		CostPerToken:    0.0, // FREE!
+		CostPerRequest:  0.0,
+		FreeTierLimit:   999999,
+		RateLimitPerMin: 999999, // No limits
+	}
+}
+
+func (o *OllamaAdapter) HealthCheck() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := o.CheckAvailability(ctx)
+	return err
 }
 
 // GenerateText implements the ModelAdapter interface for Ollama
@@ -86,7 +139,6 @@ func (o *OllamaAdapter) GenerateText(ctx context.Context, modelName string, req 
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		fmt.Printf("❌ Ollama API error (HTTP %d): %s\n", resp.StatusCode, string(bodyBytes))
 		return o.createErrorResponse(req, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(bodyBytes)), startTime), nil
 	}
 
@@ -100,6 +152,12 @@ func (o *OllamaAdapter) GenerateText(ctx context.Context, modelName string, req 
 
 	// Convert to UAIP response
 	return &uaip.UAIPResponse{
+		UAIP: uaip.UAIPHeader{
+			Version:       uaip.ProtocolVersion,
+			MessageID:     fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
+			CorrelationID: req.UAIP.MessageID,
+			Timestamp:     time.Now(),
+		},
 		Result: uaip.Result{
 			Data:         ollamaResp.Response,
 			Format:       "text",
@@ -125,10 +183,19 @@ func (o *OllamaAdapter) GenerateText(ctx context.Context, modelName string, req 
 // createErrorResponse creates a UAIP error response
 func (o *OllamaAdapter) createErrorResponse(req *uaip.UAIPRequest, err error, startTime time.Time) *uaip.UAIPResponse {
 	return &uaip.UAIPResponse{
+		UAIP: uaip.UAIPHeader{
+			Version:       uaip.ProtocolVersion,
+			MessageID:     fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
+			CorrelationID: req.UAIP.MessageID,
+			Timestamp:     time.Now(),
+		},
 		Status: uaip.ResponseStatus{
 			Success: false,
 			Message: err.Error(),
 			Code:    500,
+		},
+		Result: uaip.Result{
+			Data: fmt.Sprintf("⚠️ Ollama error: %s", err.Error()),
 		},
 		Metadata: uaip.ResponseMetadata{
 			ProcessedAt: time.Now(),
@@ -137,11 +204,6 @@ func (o *OllamaAdapter) createErrorResponse(req *uaip.UAIPRequest, err error, st
 			},
 		},
 	}
-}
-
-// GetCapabilities returns empty capabilities (not used for Ollama fallback)
-func (o *OllamaAdapter) GetCapabilities() []string {
-	return []string{"text-generation"}
 }
 
 // CheckAvailability checks if Ollama is running and returns available models

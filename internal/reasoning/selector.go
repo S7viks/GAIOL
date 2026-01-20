@@ -48,7 +48,7 @@ func (c *Composer) AssembleFinalOutput(path []ModelOutput) string {
 	if len(path) == 0 {
 		return "No outputs to assemble."
 	}
-	
+
 	var finalResponse string
 	for i, output := range path {
 		// Add step header for clarity

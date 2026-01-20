@@ -187,6 +187,10 @@ func (re *ReasoningEngine) RunSession(ctx context.Context, sessionID, prompt str
 
 // executeStep runs a single reasoning step and updates the shared memory
 func (re *ReasoningEngine) executeStep(ctx context.Context, sm *SharedMemory, sessionID string, i int, modelIDs []string) {
+	// CRITICAL: Add step-level timeout
+	stepCtx, cancel := context.WithTimeout(ctx, 15*time.Second) // MAX 15s per step
+	defer cancel()
+
 	re.Orchestrator.SessionID = sessionID
 	re.Orchestrator.OnEvent = re.OnEvent
 
@@ -220,7 +224,7 @@ func (re *ReasoningEngine) executeStep(ctx context.Context, sm *SharedMemory, se
 		contextStr, _ := re.MemoryManager.GetContextForPath(sessionID, path)
 
 		// Execute parallel models for this path
-		outputs, err := re.Orchestrator.ExecuteStep(ctx, sm.Steps[i], contextStr, modelIDs, sm.Config)
+		outputs, err := re.Orchestrator.ExecuteStep(stepCtx, sm.Steps[i], contextStr, modelIDs, sm.Config)
 		if err != nil {
 			re.emitEvent(sessionID, EventError, fmt.Sprintf("Step %d execution failed: %v", i, err))
 			continue

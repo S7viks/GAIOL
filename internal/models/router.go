@@ -48,18 +48,32 @@ func (mr *ModelRouter) Route(config RoutingConfig) (*ModelMetadata, error) {
 	// Start with all models for the task
 	candidates := mr.registry.FindModelsByTask(config.Task)
 
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no models support task: %s", config.Task)
+	}
+
+	// PRIORITY FIX: Prefer local (Ollama) models first
+	localModels := filterByProvider(candidates, "ollama")
+	if len(localModels) > 0 {
+		fmt.Printf("🏠 Using local Ollama model (no rate limits, free)\n")
+		return &localModels[0], nil
+	}
+
+	// Then HuggingFace
+	hfModels := filterByProvider(candidates, "huggingface")
+	if len(hfModels) > 0 && config.Strategy == StrategyFreeOnly {
+		fmt.Printf("🤗 Using HuggingFace model (free API)\n")
+		return &hfModels[0], nil
+	}
+
+	// Rest of routing logic...
 	// Apply Learned Quality Adjustment
 	if mr.tracker != nil {
 		for i := range candidates {
 			if learned, ok := mr.tracker.GetLearnedQuality(candidates[i].ModelName, config.Task); ok {
-				// Weight baseline quality (70%) and learned quality (30%)
 				candidates[i].QualityScore = (candidates[i].QualityScore * 0.7) + (learned * 0.3)
 			}
 		}
-	}
-
-	if len(candidates) == 0 {
-		return nil, fmt.Errorf("no models support task: %s", config.Task)
 	}
 
 	// Apply strategy-specific filtering

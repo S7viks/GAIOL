@@ -39,12 +39,15 @@ func (d *Decomposer) DecomposePrompt(ctx context.Context, prompt string) ([]Reas
 	registry := d.Router.GetRegistry()
 	allModels := registry.ListModels()
 
-	// Filter for free models and prioritize fast ones
+	// Filter for free models and prioritize local Ollama or fast cloud models
 	var decomposerModels []string
 	for _, model := range allModels {
 		if model.CostInfo.CostPerToken == 0.0 {
-			// Prioritize Gemini and fast models at the start
-			if strings.Contains(string(model.ID), "gemini") || strings.Contains(string(model.ID), "llama-3.2") {
+			// Prioritize Ollama (local) first, then Gemini and Llama-3.2
+			if model.Provider == "ollama" {
+				// Prepend Ollama models
+				decomposerModels = append([]string{string(model.ID)}, decomposerModels...)
+			} else if strings.Contains(string(model.ID), "gemini") || strings.Contains(string(model.ID), "llama-3.2") {
 				decomposerModels = append([]string{string(model.ID)}, decomposerModels...)
 			} else {
 				decomposerModels = append(decomposerModels, string(model.ID))
@@ -56,7 +59,12 @@ func (d *Decomposer) DecomposePrompt(ctx context.Context, prompt string) ([]Reas
 		return nil, fmt.Errorf("no free models available for decomposition")
 	}
 
-	fmt.Printf("📋 Found %d free models available for decomposition\n", len(decomposerModels))
+	// If an Ollama model was found, it should already be at the front
+	if strings.HasPrefix(decomposerModels[0], "ollama:") {
+		fmt.Printf("🔍 Using Ollama for decomposition: %s\n", decomposerModels[0])
+	} else {
+		fmt.Printf("📋 Found %d free models available for decomposition\n", len(decomposerModels))
+	}
 
 	qm := NewQueryModel(d.Router)
 	prompt_full := SystemPromptDecomposer + "\n\n" + prompt

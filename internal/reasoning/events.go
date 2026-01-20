@@ -19,7 +19,13 @@ const (
 	EventBeamUpdate     EventType = "beam_update"
 	EventConsensus      EventType = "consensus" // NEW: Meta-reasoning consensus
 	EventRAG            EventType = "rag"       // NEW: RAG context retrieval
-	EventError          EventType = "error"
+
+	// Agent workflow events
+	EventAgentPhase EventType = "agent_phase"
+	EventAgentStep  EventType = "agent_step"
+	EventAgentDone  EventType = "agent_done"
+
+	EventError EventType = "error"
 )
 
 // ReasoningEvent represents a real-time update during the reasoning process

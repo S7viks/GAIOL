@@ -81,15 +81,13 @@ func (api *ReasoningAPI) HandleStartReasoning(w http.ResponseWriter, r *http.Req
 
 	sessionID := api.Engine.InitSession(r.Context(), req.Prompt)
 
-	// Auto-select models if none provided - use best free models
+	// Auto-select models if none provided - prioritize speed
 	modelIDs := req.Models
 	if len(modelIDs) == 0 {
-		// Auto-select top 4 free models for best results
+		// Fastest free models for speed
 		modelIDs = []string{
-			"openrouter:google/gemini-2.0-flash-exp:free",
-			"openrouter:google/gemini-flash-1.5:free",
-			"openrouter:meta-llama/llama-3.2-3b-instruct:free",
-			"openrouter:mistralai/mistral-7b-instruct:free",
+			"google/gemini-2.0-flash-exp:free", // Fastest free model
+			"deepseek/deepseek-r1:free",        // Backup
 		}
 	}
 

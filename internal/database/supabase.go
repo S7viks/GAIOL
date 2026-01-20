@@ -117,7 +117,7 @@ func HealthCheck(ctx context.Context) error {
 	// Try to query a system table or perform a simple operation
 	// Since Supabase is built on PostgreSQL, we can use a simple SELECT 1 query
 	// through the RPC mechanism or a direct query if available
-	
+
 	// For now, we'll just verify the client is properly initialized
 	// A more thorough check would require knowing the database schema
 	// This is a basic connectivity check

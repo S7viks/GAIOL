@@ -29,17 +29,17 @@ func NewAuthAPI(db *database.Client) *AuthAPI {
 
 // SignUpRequest represents a user signup request
 type SignUpRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email    string                 `json:"email"`
+	Password string                 `json:"password"`
 	Data     map[string]interface{} `json:"data,omitempty"` // User metadata
 }
 
 // SignUpResponse represents the response from signup
 type SignUpResponse struct {
-	User        *UserInfo `json:"user"`
-	Session     *Session  `json:"session,omitempty"`
-	AccessToken string    `json:"access_token,omitempty"`
-	RefreshToken string   `json:"refresh_token,omitempty"`
+	User         *UserInfo `json:"user"`
+	Session      *Session  `json:"session,omitempty"`
+	AccessToken  string    `json:"access_token,omitempty"`
+	RefreshToken string    `json:"refresh_token,omitempty"`
 }
 
 // UserInfo represents Supabase user information
@@ -53,10 +53,10 @@ type UserInfo struct {
 
 // Session represents an authentication session
 type Session struct {
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int    `json:"expires_in"`
-	TokenType    string `json:"token_type"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresIn    int       `json:"expires_in"`
+	TokenType    string    `json:"token_type"`
 	User         *UserInfo `json:"user"`
 }
 
@@ -68,16 +68,16 @@ type SignInRequest struct {
 
 // SignInResponse represents the response from signin
 type SignInResponse struct {
-	Session     *Session  `json:"session"`
-	User        *UserInfo `json:"user"`
-	AccessToken string    `json:"access_token"`
-	RefreshToken string   `json:"refresh_token"`
+	Session      *Session  `json:"session"`
+	User         *UserInfo `json:"user"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 // SignUp creates a new user account
 func (a *AuthAPI) SignUp(ctx context.Context, req SignUpRequest) (*SignUpResponse, error) {
 	url := fmt.Sprintf("%s/auth/v1/signup", a.SupabaseURL)
-	
+
 	payload := map[string]interface{}{
 		"email":    req.Email,
 		"password": req.Password,
@@ -154,7 +154,7 @@ func (a *AuthAPI) SignUp(ctx context.Context, req SignUpRequest) (*SignUpRespons
 // SignIn authenticates a user and returns a session
 func (a *AuthAPI) SignIn(ctx context.Context, req SignInRequest) (*SignInResponse, error) {
 	url := fmt.Sprintf("%s/auth/v1/token?grant_type=password", a.SupabaseURL)
-	
+
 	payload := map[string]string{
 		"email":    req.Email,
 		"password": req.Password,
@@ -233,7 +233,7 @@ func (a *AuthAPI) SignIn(ctx context.Context, req SignInRequest) (*SignInRespons
 // RefreshToken refreshes an access token using a refresh token
 func (a *AuthAPI) RefreshToken(ctx context.Context, refreshToken string) (*Session, error) {
 	url := fmt.Sprintf("%s/auth/v1/token?grant_type=refresh_token", a.SupabaseURL)
-	
+
 	payload := map[string]string{
 		"refresh_token": refreshToken,
 	}
