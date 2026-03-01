@@ -7,143 +7,242 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
-	"sync"
+	"syscall"
 	"time"
 
+	"gaiol/internal/auth"
+	"gaiol/internal/database"
 	"gaiol/internal/models"
 	"gaiol/internal/models/adapters"
+	"gaiol/internal/monitoring"
+	"gaiol/internal/reasoning"
 	"gaiol/internal/uaip"
+
+	"github.com/joho/godotenv"
 )
 
 var (
-	router   *models.ModelRouter
-	registry *models.Registry
+	registry     *models.Registry
+	router       *models.ModelRouter
+	dbClient     *database.Client
+	dbAvailable  bool
+	authAPI      *auth.AuthAPI
+	reasoningAPI *reasoning.ReasoningAPI
+	worldModel   *reasoning.WorldModel // NEW
+	metrics      *monitoring.MetricsService
 )
 
-// === REQUEST/RESPONSE TYPES ===
-
-type QueryRequest struct {
-	Prompt      string                 `json:"prompt"`
-	Models      []string               `json:"models,omitempty"`   // For multi-model comparison
-	Strategy    models.RoutingStrategy `json:"strategy,omitempty"` // For smart routing
-	Task        models.TaskType        `json:"task,omitempty"`
-	MaxTokens   int                    `json:"max_tokens,omitempty"`
-	Temperature float64                `json:"temperature,omitempty"`
-	ModelID     string                 `json:"model_id,omitempty"` // For direct model selection
-}
-
-type ModelResponse struct {
-	Response string  `json:"response"`
-	Time     int     `json:"time"`
-	Tokens   int     `json:"tokens"`
-	Quality  float64 `json:"quality"`
-	Success  bool    `json:"success"`
-	Model    string  `json:"model"`
-	Error    string  `json:"error,omitempty"`
-}
-
-type ErrorResponse struct {
-	Error   string `json:"error"`
-	Code    string `json:"code,omitempty"`
-	Message string `json:"message,omitempty"`
-}
-
 func main() {
-	// Get API keys
-	geminiKey := os.Getenv("GEMINI_API_KEY")
-	openrouterKey := os.Getenv("OPENROUTER_API_KEY")
-	hfKey := os.Getenv("HUGGINGFACE_API_KEY")
-
-	if openrouterKey == "" {
-		log.Println("⚠️  Warning: OPENROUTER_API_KEY not set - OpenRouter models unavailable")
-	}
-	if geminiKey == "" {
-		log.Println("⚠️  Warning: GEMINI_API_KEY not set - Gemini models unavailable")
-	}
-	if hfKey == "" {
-		log.Println("ℹ️  Info: HUGGINGFACE_API_KEY not set - HuggingFace models unavailable")
+	// Load environment variables
+	if err := loadEnv(); err != nil {
+		log.Printf("Warning: Failed to load .env file: %v", err)
 	}
 
-	// Initialize adapters
-	var orAdapter, hfAdapter models.ModelAdapter
+	// Initialize model adapters
+	fmt.Println("🔧 Initializing model adapters...")
 
-	if openrouterKey != "" {
-		orAdapter = adapters.NewOpenRouterAdapter("", openrouterKey)
+	// 1. OLLAMA FIRST (local, fast, unlimited)
+	ollamaAdapter := adapters.NewOllamaAdapter("")
+	ollamaModels, ollamaErr := ollamaAdapter.CheckAvailability(context.Background())
+	if ollamaErr == nil && len(ollamaModels) > 0 {
+		fmt.Printf("✅ Ollama available with %d local models: %v\n", len(ollamaModels), ollamaModels)
+		fmt.Println("💡 Ollama will be used as PRIMARY provider (unlimited, fast)")
+	} else {
+		fmt.Printf("⚠️ Ollama not available: %v\n", ollamaErr)
+		fmt.Println("💡 Install Ollama and run: ollama pull llama3.2")
+		ollamaAdapter = nil
 	}
 
-	if hfKey != "" {
-		hfAdapter = adapters.NewHuggingFaceAdapter("", hfKey)
-	}
+	// 2. HuggingFace (free API, backup)
+	hfAPIKey := os.Getenv("HUGGINGFACE_API_KEY")
+	hfAdapter := adapters.NewHuggingFaceAdapter("", hfAPIKey)
+	fmt.Println("✅ HuggingFace adapter initialized (backup provider)")
 
-	// Create registry with available adapters
-	if orAdapter != nil {
-		if hfAdapter != nil {
-			registry = models.NewRegistry(orAdapter, hfAdapter)
+	// 3. OpenRouter (last resort due to rate limits)
+	openRouterAPIKey := os.Getenv("OPENROUTER_API_KEY")
+	openRouterAdapter := adapters.NewOpenRouterAdapter("", openRouterAPIKey)
+	fmt.Println("✅ OpenRouter adapter initialized (fallback only)")
+
+	// Create registry with priority: Ollama > HF > OpenRouter
+	registry = models.NewRegistry(openRouterAdapter, hfAdapter, ollamaAdapter)
+	fmt.Printf("📋 Registry initialized with %d models\n", registry.Count())
+
+	// Initialize database (optional)
+	var tracker *models.PerformanceTracker
+	var err error
+	dbClient, err = database.NewClient()
+	if err != nil {
+		log.Printf("⚠️  Database not available: %v - authentication features disabled", err)
+		dbClient = nil
+		dbAvailable = false
+	} else if dbClient != nil {
+		// Test database connection - check if client is properly initialized
+		if dbClient.Client == nil {
+			log.Printf("⚠️  Database client is nil - authentication features disabled")
+			dbClient = nil
+			dbAvailable = false
 		} else {
-			// Create a dummy adapter for registry initialization
-			dummyAdapter := &DummyAdapter{}
-			registry = models.NewRegistry(orAdapter, dummyAdapter)
+			log.Println("✅ Database client initialized")
+			authAPI = auth.NewAuthAPI(dbClient)
+			tracker = models.NewPerformanceTracker(dbClient)
+			// Refresh cache asynchronously to avoid blocking startup
+			go func() {
+				if err := tracker.RefreshCache(context.Background()); err != nil {
+					log.Printf("⚠️  Performance cache refresh failed (non-critical): %v", err)
+				} else {
+					log.Println("✅ Performance cache refreshed")
+				}
+			}()
+			log.Println("✅ Performance tracker initialized (cache refreshing in background)")
+			dbAvailable = true
 		}
 	} else {
-		log.Fatal("❌ At least OPENROUTER_API_KEY must be set")
+		dbAvailable = false
+		log.Println("⚠️  Database not available - authentication features disabled")
 	}
 
-	router = models.NewModelRouter(registry)
+	// Create router
+	router = models.NewModelRouter(registry, tracker)
+	log.Println("✅ Model router initialized")
 
-	// Setup routes
-	http.HandleFunc("/", noCacheFileServer)
-	http.HandleFunc("/api/query", corsMiddleware(handleQuery))
-	http.HandleFunc("/api/query/smart", corsMiddleware(handleSmartQuery))
-	http.HandleFunc("/api/query/model", corsMiddleware(handleQueryWithModel))
-	http.HandleFunc("/api/models", corsMiddleware(handleListModels))
-	http.HandleFunc("/api/models/free", corsMiddleware(handleListFreeModels))
-	http.HandleFunc("/api/models/", corsMiddleware(handleModelsByProvider))
-	http.HandleFunc("/health", handleHealth)
+	// Initialize World Model (NEW)
+	worldModel = reasoning.NewWorldModel(dbClient)
+	log.Println("✅ World Model initialized")
 
+	// Initialize reasoning API
+	reasoningAPI = reasoning.NewReasoningAPI(router)
+	log.Println("✅ Reasoning API initialized")
+
+	// Initialize metrics
+	metrics = monitoring.NewMetricsService()
+	log.Println("✅ Metrics service initialized")
+
+	// Register routes
+	registerRoutes()
+
+	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	fmt.Println("🚀 GAIOL Web Server")
-	fmt.Println(strings.Repeat("=", 70))
-	fmt.Printf("📋 Loaded %d models\n", registry.Count())
-	fmt.Printf("💰 Free models: %d\n", len(registry.FindFreeModels()))
-	fmt.Printf("🌐 Server: http://localhost:%s\n", port)
-	fmt.Printf("📂 Web UI: http://localhost:%s\n", port)
-	fmt.Println("\nAPI Endpoints:")
-	fmt.Println("  POST /api/query             - Multi-model comparison (legacy)")
-	fmt.Println("  POST /api/query/smart       - Smart routing (recommended)")
-	fmt.Println("  POST /api/query/model       - Query specific model")
-	fmt.Println("  GET  /api/models            - List all models")
-	fmt.Println("  GET  /api/models/free       - List free models")
-	fmt.Println("  GET  /api/models/:provider  - List by provider")
-	fmt.Println("  GET  /health                - Health check")
-	fmt.Println(strings.Repeat("=", 70))
+	server := &http.Server{
+		Addr:         ":" + port,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
 
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	// Graceful shutdown
+	go func() {
+		sigint := make(chan os.Signal, 1)
+		signal.Notify(sigint, os.Interrupt, syscall.SIGTERM)
+		<-sigint
+
+		log.Println("🛑 Shutting down server...")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("Server shutdown error: %v", err)
+		}
+	}()
+
+	log.Printf("🚀 GAIOL Web Server starting on http://localhost:%s", port)
+	log.Printf("📊 Health check: http://localhost:%s/health", port)
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Fatalf("Server failed to start: %v", err)
+	}
 }
 
-// === MIDDLEWARE ===
-func noCacheFileServer(w http.ResponseWriter, r *http.Request) {
-	// Disable caching for development
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Pragma", "no-cache")
-	w.Header().Set("Expires", "0")
-
-	// Serve the file
-	fs := http.FileServer(http.Dir("./web"))
-	fs.ServeHTTP(w, r)
+func loadEnv() error {
+	// Try to load .env file
+	if _, err := os.Stat(".env"); err == nil {
+		if err := godotenv.Load(".env"); err != nil {
+			return fmt.Errorf("failed to load .env file: %w", err)
+		}
+		log.Println("✅ Loaded environment variables from .env file")
+		return nil
+	}
+	return nil
 }
+
+func registerRoutes() {
+	// CORS middleware
+	cors := corsMiddleware
+
+	// 1. Root and System Routes (public)
+	http.HandleFunc("/", noCacheFileServer)
+	http.HandleFunc("/health", handleHealth)
+
+	// 2. Model Routes (public, specific first)
+	http.HandleFunc("/api/models/free", cors(handleListFreeModels))
+	http.HandleFunc("/api/models", cors(handleListModels))
+	http.HandleFunc("/api/models/", cors(handleModelsByProvider))
+
+	// 3. Authentication Routes (always available, but return 503 if database unavailable)
+	authMiddleware := auth.AuthMiddleware(dbClient)
+	http.Handle("/api/auth/signup", optionalAuthMiddleware(authMiddleware, cors(handleSignUp)))
+	http.Handle("/api/auth/signin", optionalAuthMiddleware(authMiddleware, cors(handleSignIn)))
+	http.Handle("/api/auth/signout", optionalAuthMiddleware(authMiddleware, cors(handleSignOut)))
+	http.Handle("/api/auth/session", optionalAuthMiddleware(authMiddleware, cors(handleGetSession)))
+	http.Handle("/api/auth/refresh", optionalAuthMiddleware(authMiddleware, cors(handleRefreshToken)))
+	http.Handle("/api/auth/user", optionalAuthMiddleware(authMiddleware, cors(handleGetUser)))
+
+	// 4. Query Routes (auth optional - works with or without database)
+	// If database is available, use auth middleware (but make it optional)
+	// If database is not available, allow queries without auth
+	if dbAvailable && authAPI != nil {
+		// Use auth middleware but make it optional (allow requests without auth)
+		authMiddleware := auth.AuthMiddleware(dbClient)
+		http.Handle("/api/query", optionalAuthMiddleware(authMiddleware, cors(handleQuery)))
+		http.Handle("/api/query/smart", optionalAuthMiddleware(authMiddleware, cors(handleQuerySmart)))
+		http.Handle("/api/query/model", optionalAuthMiddleware(authMiddleware, cors(handleQueryModel)))
+	} else {
+		// No database: allow queries without auth
+		http.HandleFunc("/api/query", cors(handleQuery))
+		http.HandleFunc("/api/query/smart", cors(handleQuerySmart))
+		http.HandleFunc("/api/query/model", cors(handleQueryModel))
+	}
+
+	// 5. Reasoning Routes
+	http.HandleFunc("/api/reasoning/start", cors(handleReasoningStart))
+	http.HandleFunc("/api/reasoning/status/", cors(handleReasoningStatus))
+	http.HandleFunc("/api/reasoning/ws", cors(handleReasoningWebSocket))
+	http.HandleFunc("/api/monitoring/stats", cors(handleMonitoringStats))
+
+	// 6. World Model Routes (NEW)
+	http.HandleFunc("/api/world-model/facts", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelFacts(w, r)
+	}))
+	http.HandleFunc("/api/world-model/store", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelStore(w, r)
+	}))
+	http.HandleFunc("/api/world-model/search", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleWorldModelSearch(w, r)
+	}))
+
+	// 7. Multi-Agent Workflow Route (updated to use world model)
+	http.HandleFunc("/api/agent/workflow", cors(func(w http.ResponseWriter, r *http.Request) {
+		handleAgentWorkflow(w, r)
+	}))
+}
+
+// ============================================================================
+// CORS Middleware
+// ============================================================================
+
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Max-Age", "3600")
 
 		if r.Method == "OPTIONS" {
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
 
@@ -151,35 +250,191 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// === HANDLERS ===
+// optionalAuthMiddleware wraps auth middleware but allows requests without auth to pass through
+func optionalAuthMiddleware(authMiddleware func(http.Handler) http.Handler, next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check if auth header is present
+		authHeader := r.Header.Get("Authorization")
 
-// POST /api/query - Multi-model comparison (backward compatible)
-// POST /api/query - Multi-model comparison with rate limiting
-func handleQuery(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
+		// Also check for cookie-based auth
+		_, cookieErr := r.Cookie("sb-access-token")
 
-	if r.Method != "POST" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		// If NO auth header AND NO auth cookie, allow request without authentication
+		if authHeader == "" && cookieErr != nil {
+			// No authentication provided - proceed without auth
+			next(w, r)
+			return
+		}
+
+		// Auth credentials present - validate them using auth middleware
+		authMiddleware(next).ServeHTTP(w, r)
+	})
+}
+
+// ============================================================================
+// File Server (no cache)
+// ============================================================================
+
+func noCacheFileServer(w http.ResponseWriter, r *http.Request) {
+	// Disable caching
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Expires", "0")
+
+	// Handle root path - serve index.html directly without redirect
+	if r.URL.Path == "/" || r.URL.Path == "" {
+		file, err := os.Open("./web/index.html")
+		if err != nil {
+			http.Error(w, "index.html not found", http.StatusNotFound)
+			return
+		}
+		defer file.Close()
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		http.ServeContent(w, r, "index.html", time.Time{}, file)
 		return
 	}
 
-	var req QueryRequest
+	// For all other paths, serve from ./web directory
+	// Use StripPrefix to serve files correctly
+	fs := http.FileServer(http.Dir("./web"))
+	http.StripPrefix("/", fs).ServeHTTP(w, r)
+}
+
+// ============================================================================
+// Health Check
+// ============================================================================
+
+func handleHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	health := map[string]interface{}{
+		"status":  "healthy",
+		"models":  registry.Count(),
+		"version": "1.0.0",
+		"time":    time.Now().Format(time.RFC3339),
+	}
+
+	// Check database availability
+	health["database"] = map[string]interface{}{
+		"connected": dbAvailable,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(health)
+}
+
+// ============================================================================
+// Model Listing Handlers
+// ============================================================================
+
+func handleListModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	models := registry.ListModels()
+	response := map[string]interface{}{
+		"models": convertModelsToJSON(models),
+		"count":  len(models),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleListFreeModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	freeModels := registry.FindFreeModels()
+	response := map[string]interface{}{
+		"models": convertModelsToJSON(freeModels),
+		"count":  len(freeModels),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleModelsByProvider(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract provider from path: /api/models/{provider}
+	path := strings.TrimPrefix(r.URL.Path, "/api/models/")
+	provider := strings.TrimSuffix(path, "/")
+
+	if provider == "" {
+		http.Error(w, "Provider is required", http.StatusBadRequest)
+		return
+	}
+
+	models := registry.FindModelsByProvider(provider)
+	response := map[string]interface{}{
+		"provider": provider,
+		"models":   convertModelsToJSON(models),
+		"count":    len(models),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func convertModelsToJSON(models []models.ModelMetadata) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(models))
+	for i, m := range models {
+		result[i] = map[string]interface{}{
+			"id":             string(m.ID),
+			"provider":       m.Provider,
+			"model_name":     m.ModelName,
+			"display_name":   m.DisplayName,
+			"cost_per_token": m.CostInfo.CostPerToken,
+			"capabilities":   m.Capabilities,
+			"quality_score":  m.QualityScore,
+			"context_window": m.ContextWindow,
+			"max_tokens":     m.MaxTokens,
+			"tags":           m.Tags,
+		}
+	}
+	return result
+}
+
+// ============================================================================
+// Query Handlers
+// ============================================================================
+
+func handleQuery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Prompt      string   `json:"prompt"`
+		Models      []string `json:"models"`
+		MaxTokens   int      `json:"max_tokens"`
+		Temperature float64  `json:"temperature"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendError(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if req.Prompt == "" {
-		sendError(w, "Prompt is required", http.StatusBadRequest)
+		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
 
-	if len(req.Models) == 0 {
-		sendError(w, "At least one model required", http.StatusBadRequest)
-		return
-	}
-
-	// Apply defaults
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 300
 	}
@@ -187,129 +442,249 @@ func handleQuery(w http.ResponseWriter, r *http.Request) {
 		req.Temperature = 0.7
 	}
 
-	// Query models with staggered delays to avoid rate limits
-	response := make(map[string]ModelResponse)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	// Execute queries for all requested models
+	ctx := r.Context()
+	results := make([]map[string]interface{}, 0, len(req.Models))
 
-	for i, modelName := range req.Models {
-		wg.Add(1)
+	for _, modelID := range req.Models {
+		modelMeta, err := registry.GetModel(models.ModelID(modelID))
+		if err != nil {
+			// Try with openrouter: prefix
+			modelMeta, err = registry.GetModel(models.ModelID("openrouter:" + modelID))
+			if err != nil {
+				results = append(results, map[string]interface{}{
+					"model_id": modelID,
+					"error":    "Model not found: " + err.Error(),
+				})
+				continue
+			}
+		}
 
-		// Add 3-second delay between each request (20 RPM = 1 request per 3 seconds)
-		time.Sleep(time.Duration(i*3) * time.Second)
-
-		go func(m string) {
-			defer wg.Done()
-
-			result := queryModelByName(m, req.Prompt, req.MaxTokens, req.Temperature)
-
-			mu.Lock()
-			response[m] = result
-			mu.Unlock()
-		}(modelName)
-	}
-
-	wg.Wait()
-
-	json.NewEncoder(w).Encode(response)
-}
-
-// POST /api/query/smart - Smart routing with strategies
-func handleSmartQuery(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var req QueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendError(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if req.Prompt == "" {
-		sendError(w, "Prompt is required", http.StatusBadRequest)
-		return
-	}
-
-	// Apply defaults
-	if req.Strategy == "" {
-		req.Strategy = models.StrategyFreeOnly
-	}
-	if req.Task == "" {
-		req.Task = models.TaskGenerate
-	}
-	if req.MaxTokens == 0 {
-		req.MaxTokens = 200
-	}
-	if req.Temperature == 0 {
-		req.Temperature = 0.7
-	}
-
-	// Create UAIP request
-	uaipReq := &uaip.UAIPRequest{
-		UAIP: uaip.UAIPHeader{
-			Version:   uaip.ProtocolVersion,
-			MessageID: fmt.Sprintf("req-%d", time.Now().UnixNano()),
-			Timestamp: time.Now(),
-		},
-		Payload: uaip.Payload{
-			Input: uaip.PayloadInput{
-				Data:   req.Prompt,
-				Format: "text",
+		uaipReq := &uaip.UAIPRequest{
+			UAIP: uaip.UAIPHeader{
+				Version:   uaip.ProtocolVersion,
+				MessageID: fmt.Sprintf("query-%d", time.Now().UnixNano()),
+				Timestamp: time.Now(),
 			},
-			OutputRequirements: uaip.OutputRequirements{
-				MaxTokens:   req.MaxTokens,
-				Temperature: req.Temperature,
+			Payload: uaip.Payload{
+				Input: uaip.PayloadInput{
+					Data:   req.Prompt,
+					Format: "text",
+				},
+				OutputRequirements: uaip.OutputRequirements{
+					MaxTokens:   req.MaxTokens,
+					Temperature: req.Temperature,
+				},
 			},
-		},
+		}
+
+		resp, err := modelMeta.Adapter.GenerateText(ctx, modelMeta.ModelName, uaipReq)
+		if err != nil {
+			results = append(results, map[string]interface{}{
+				"model_id": modelID,
+				"error":    err.Error(),
+			})
+			continue
+		}
+
+		results = append(results, map[string]interface{}{
+			"model_id":    modelID,
+			"response":    resp.Result.Data,
+			"tokens_used": resp.Result.TokensUsed,
+			"cost":        resp.Metadata.CostInfo.TotalCost,
+			"latency_ms":  resp.Result.ProcessingMs,
+			"quality":     resp.Result.Quality,
+		})
 	}
 
-	// Route and execute
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	defer cancel()
-
-	config := models.RoutingConfig{
-		Strategy:   req.Strategy,
-		Task:       req.Task,
-		MaxCost:    0.00001,
-		MinQuality: 0.70,
-	}
-
-	resp, err := router.RouteAndExecute(ctx, config, uaipReq)
-	if err != nil {
-		sendError(w, "Routing failed: "+err.Error(), http.StatusInternalServerError)
-		return
+	response := map[string]interface{}{
+		"results": results,
+		"count":   len(results),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	json.NewEncoder(w).Encode(response)
 }
 
-// POST /api/query/model - Query specific model by ID
-func handleQueryWithModel(w http.ResponseWriter, r *http.Request) {
+func handleQuerySmart(w http.ResponseWriter, r *http.Request) {
+	// Add panic recovery with proper error response
+	defer func() {
+		if err := recover(); err != nil {
+			log.Printf("❌ PANIC in handleQuerySmart: %v", err)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   fmt.Sprintf("Internal server error: %v", err),
+				"success": false,
+			})
+		}
+	}()
+
+	log.Printf("📥 handleQuerySmart called - using Reasoning Engine")
+
 	if r.Method != "POST" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+		log.Printf("❌ Invalid method: %s", r.Method)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	var req QueryRequest
+	var req struct {
+		Prompt      string  `json:"prompt"`
+		Strategy    string  `json:"strategy"`
+		Task        string  `json:"task"`
+		MaxTokens   int     `json:"max_tokens"`
+		Temperature float64 `json:"temperature"`
+	}
+
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		sendError(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		log.Printf("❌ Invalid JSON: %v", err)
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("📋 Query request - Prompt: %q, Strategy: %s, Task: %s", req.Prompt, req.Strategy, req.Task)
+
+	if req.Prompt == "" {
+		log.Printf("❌ Empty prompt")
+		http.Error(w, "prompt is required", http.StatusBadRequest)
+		return
+	}
+
+	// Check if reasoning API is initialized
+	if reasoningAPI == nil || reasoningAPI.Engine == nil {
+		log.Printf("❌ Reasoning API or Engine is nil")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Reasoning engine not initialized",
+			"success": false,
+		})
+		return
+	}
+
+	// Use reasoning engine for ALL queries now
+	// The reasoning engine will automatically use single-step fallback for simple queries
+	sessionID := reasoningAPI.Engine.InitSession(r.Context(), req.Prompt)
+
+	log.Printf("🧠 Starting reasoning session: %s", sessionID)
+
+	// Execute reasoning with automatic fallback
+	sm, err := reasoningAPI.Engine.RunSession(r.Context(), sessionID, req.Prompt, []string{})
+	if err != nil {
+		log.Printf("❌ Reasoning failed: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Reasoning failed: " + err.Error(),
+			"success": false,
+		})
+		return
+	}
+
+	// Extract the final result from the reasoning session
+	finalOutput := ""
+	if sm != nil {
+		// Use composer to assemble final output from selected path (handles multi-step)
+		if len(sm.SelectedPath) > 0 {
+			// Use the composer to properly assemble multi-step outputs
+			composer := reasoning.NewComposer()
+			finalOutput = composer.AssembleFinalOutput(sm.SelectedPath)
+		} else if len(sm.Steps) > 0 {
+			// If no selected path but we have steps, try to extract from step outputs
+			for i := len(sm.Steps) - 1; i >= 0; i-- {
+				if sm.Steps[i].SelectedOutput != nil && sm.Steps[i].SelectedOutput.Response != "" {
+					finalOutput = sm.Steps[i].SelectedOutput.Response
+					break
+				}
+				// Also check all model outputs in case selected output is nil
+				if len(sm.Steps[i].ModelOutputs) > 0 {
+					for _, out := range sm.Steps[i].ModelOutputs {
+						if out.Response != "" {
+							finalOutput = out.Response
+							break
+						}
+					}
+					if finalOutput != "" {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// If still empty, provide a helpful error message
+	if finalOutput == "" {
+		finalOutput = "⚠️ All AI models are currently unavailable due to API rate limits or service issues.\n\nPossible causes:\n- OpenRouter API rate limit exceeded (429 errors)\n- API key issues or payment required (402 errors)\n- Model not found (404 errors)\n- Ollama service unavailable or timing out\n\nPlease wait a few minutes and try again, or check your API keys and service status."
+	}
+
+	log.Printf("✅ Reasoning completed successfully")
+
+	// Build response in the same format as before for frontend compatibility
+	response := map[string]interface{}{
+		"uaip": true,
+		"status": map[string]interface{}{
+			"success": true,
+		},
+		"result": map[string]interface{}{
+			"data":          finalOutput,
+			"tokens_used":   0, // Could aggregate from sm if needed
+			"model_used":    "ReasoningEngine",
+			"processing_ms": 0,
+			"quality":       1.0,
+		},
+		"metadata": map[string]interface{}{
+			"cost_info": map[string]interface{}{
+				"total_cost": sm.TotalCost,
+			},
+			"session_id":     sessionID,
+			"steps_executed": len(sm.Steps),
+		},
+		// Legacy format for backward compatibility
+		"model_id":    "reasoning-engine",
+		"model_name":  "GAIOL Reasoning Engine",
+		"response":    finalOutput,
+		"tokens_used": 0,
+		"cost":        sm.TotalCost,
+		"latency_ms":  0,
+		"quality":     1.0,
+		"strategy":    "reasoning",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("❌ Failed to encode response: %v", err)
+	}
+}
+
+func handleQueryModel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Prompt      string  `json:"prompt"`
+		ModelID     string  `json:"model_id"`
+		MaxTokens   int     `json:"max_tokens"`
+		Temperature float64 `json:"temperature"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	if req.Prompt == "" {
-		sendError(w, "Prompt is required", http.StatusBadRequest)
+		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
 
 	if req.ModelID == "" {
-		sendError(w, "model_id is required", http.StatusBadRequest)
+		http.Error(w, "model_id is required", http.StatusBadRequest)
 		return
 	}
 
-	// Apply defaults
 	if req.MaxTokens == 0 {
 		req.MaxTokens = 200
 	}
@@ -317,18 +692,20 @@ func handleQueryWithModel(w http.ResponseWriter, r *http.Request) {
 		req.Temperature = 0.7
 	}
 
-	// Get model from registry
-	model, err := registry.GetModel(models.ModelID(req.ModelID))
+	modelMeta, err := registry.GetModel(models.ModelID(req.ModelID))
 	if err != nil {
-		sendError(w, "Model not found: "+err.Error(), http.StatusNotFound)
-		return
+		// Try with openrouter: prefix
+		modelMeta, err = registry.GetModel(models.ModelID("openrouter:" + req.ModelID))
+		if err != nil {
+			http.Error(w, "Model not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
 	}
 
-	// Create UAIP request
 	uaipReq := &uaip.UAIPRequest{
 		UAIP: uaip.UAIPHeader{
 			Version:   uaip.ProtocolVersion,
-			MessageID: fmt.Sprintf("req-%d", time.Now().UnixNano()),
+			MessageID: fmt.Sprintf("model-%d", time.Now().UnixNano()),
 			Timestamp: time.Now(),
 		},
 		Payload: uaip.Payload{
@@ -343,13 +720,57 @@ func handleQueryWithModel(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 
-	// Execute with specific model
-	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
-	defer cancel()
-
-	resp, err := model.Adapter.GenerateText(ctx, model.ModelName, uaipReq)
+	ctx := r.Context()
+	resp, err := modelMeta.Adapter.GenerateText(ctx, modelMeta.ModelName, uaipReq)
 	if err != nil {
-		sendError(w, "Generation failed: "+err.Error(), http.StatusInternalServerError)
+		http.Error(w, "Query execution failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"model_id":    req.ModelID,
+		"model_name":  modelMeta.DisplayName,
+		"response":    resp.Result.Data,
+		"tokens_used": resp.Result.TokensUsed,
+		"cost":        resp.Metadata.CostInfo.TotalCost,
+		"latency_ms":  resp.Result.ProcessingMs,
+		"quality":     resp.Result.Quality,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// ============================================================================
+// Authentication Handlers
+// ============================================================================
+
+func handleSignUp(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if database is available
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
+		return
+	}
+
+	var req auth.SignUpRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	resp, err := authAPI.SignUp(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -357,184 +778,435 @@ func handleQueryWithModel(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// GET /api/models - List all models
-func handleListModels(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+func handleSignIn(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	allModels := registry.ListModels()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":  len(allModels),
-		"models": allModels,
-	})
-}
-
-// GET /api/models/free - List free models
-func handleListFreeModels(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+	// Check if database is available
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
 		return
 	}
 
-	freeModels := registry.FindFreeModels()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"count":  len(freeModels),
-		"models": freeModels,
-	})
-}
-
-// GET /api/models/:provider - List by provider
-func handleModelsByProvider(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		sendError(w, "Method not allowed", http.StatusMethodNotAllowed)
+	var req auth.SignInRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	provider := strings.TrimPrefix(r.URL.Path, "/api/models/")
-	if provider == "" {
-		sendError(w, "Provider name required", http.StatusBadRequest)
-		return
-	}
-
-	providerModels := registry.FindModelsByProvider(provider)
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"provider": provider,
-		"count":    len(providerModels),
-		"models":   providerModels,
-	})
-}
-
-// GET /health - Health check
-func handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":      "ok",
-		"models":      registry.Count(),
-		"free_models": len(registry.FindFreeModels()),
-		"timestamp":   time.Now().Format(time.RFC3339),
-	})
-}
-
-// === HELPER FUNCTIONS ===
-
-func queryModelByName(modelName, prompt string, maxTokens int, temperature float64) ModelResponse {
-	startTime := time.Now()
-
-	// Map legacy model names to registry IDs
-	modelID := mapLegacyModelName(modelName)
-
-	model, err := registry.GetModel(models.ModelID(modelID))
+	resp, err := authAPI.SignIn(r.Context(), req)
 	if err != nil {
-		return ModelResponse{
-			Success: false,
-			Error:   "Model not found: " + modelName,
-			Time:    int(time.Since(startTime).Milliseconds()),
-		}
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
 	}
 
-	uaipReq := &uaip.UAIPRequest{
-		UAIP: uaip.UAIPHeader{
-			Version:   uaip.ProtocolVersion,
-			MessageID: fmt.Sprintf("web-%d", time.Now().UnixNano()),
-			Timestamp: time.Now(),
-		},
-		Payload: uaip.Payload{
-			Input: uaip.PayloadInput{
-				Data:   prompt,
-				Format: "text",
-			},
-			OutputRequirements: uaip.OutputRequirements{
-				MaxTokens:   maxTokens,
-				Temperature: temperature,
-			},
-		},
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-
-	resp, err := model.Adapter.GenerateText(ctx, model.ModelName, uaipReq)
-	processingTime := int(time.Since(startTime).Milliseconds())
-
-	result := ModelResponse{
-		Time:    processingTime,
-		Success: err == nil && resp != nil && resp.Status.Success,
-		Model:   model.DisplayName,
-	}
-
-	if result.Success {
-		result.Response = resp.Result.Data
-		result.Tokens = resp.Result.TokensUsed
-		result.Quality = resp.Result.Quality
-	} else {
-		result.Error = "Failed to get response"
-		if err != nil {
-			result.Error = err.Error()
-		} else if resp != nil && resp.Error != nil {
-			result.Error = resp.Error.Message
-		}
-	}
-
-	return result
-}
-
-// Map legacy model names to new registry IDs
-// Map legacy model names to registry IDs
-// Map legacy model names to registry IDs
-// Map legacy model names to registry IDs
-// Map legacy model names to registry IDs
-// Map legacy model names to registry IDs
-// Map legacy model names to registry IDs
-func mapLegacyModelName(legacy string) string {
-	mapping := map[string]string{
-		// OpenRouter free models
-		"llama3":   "openrouter:meta-llama/llama-3.2-3b-instruct:free",
-		"mistral":  "openrouter:mistralai/mistral-7b-instruct:free",
-		"qwen":     "openrouter:qwen/qwen-2-7b-instruct:free",
-		"glm":      "openrouter:z-ai/glm-4.5-air:free",
-		"deepseek": "openrouter:deepseek/deepseek-r1:free",
-
-		// HuggingFace working model (only one that works reliably)
-		"hf-llama": "huggingface:meta-llama/Llama-3.1-8B-Instruct",
-
-		// OpenRouter premium models
-		"gpt4mini": "openrouter:openai/gpt-4o-mini",
-		"claude":   "openrouter:anthropic/claude-3.5-sonnet",
-	}
-
-	if mapped, exists := mapping[legacy]; exists {
-		return mapped
-	}
-
-	return legacy
-}
-
-func sendError(w http.ResponseWriter, message string, code int) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(ErrorResponse{
-		Error:   message,
-		Code:    fmt.Sprintf("HTTP_%d", code),
-		Message: message,
+	json.NewEncoder(w).Encode(resp)
+}
+
+func handleSignOut(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if database is available
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
+		return
+	}
+
+	user, err := auth.RequireAuth(r.Context())
+	if err != nil {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	// Get token from header
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" {
+		http.Error(w, "Authorization header required", http.StatusUnauthorized)
+		return
+	}
+
+	parts := strings.Split(authHeader, " ")
+	if len(parts) != 2 || parts[0] != "Bearer" {
+		http.Error(w, "Invalid authorization header", http.StatusUnauthorized)
+		return
+	}
+
+	err = authAPI.SignOut(r.Context(), parts[1])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"success": true,
+		"message": "Signed out successfully",
+		"user_id": user.ID,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleGetSession(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if database is available FIRST - before checking auth
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
+		return
+	}
+
+	// Now check auth - only if database is available
+	user, err := auth.RequireAuth(r.Context())
+	if err != nil {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	// Try to get full user info from Supabase API
+	authHeader := r.Header.Get("Authorization")
+	var userInfo *auth.UserInfo
+	if authHeader != "" && authAPI != nil {
+		parts := strings.Split(authHeader, " ")
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			// Fetch full user info from Supabase
+			if fullUser, err := authAPI.GetUser(r.Context(), parts[1]); err == nil {
+				userInfo = fullUser
+			}
+		}
+	}
+
+	// Build response with available data
+	responseUser := map[string]interface{}{
+		"id":        user.ID,
+		"email":     user.Email,
+		"tenant_id": user.TenantID,
+		"org_id":    user.OrgID,
+	}
+
+	// Add fields from full user info if available
+	if userInfo != nil {
+		responseUser["created_at"] = userInfo.CreatedAt
+		responseUser["user_metadata"] = userInfo.UserMetadata
+	} else {
+		// Fallback to JWT claims
+		userMetadata := make(map[string]interface{})
+		var createdAt string
+
+		if user.Claims != nil {
+			if metadata, ok := user.Claims["user_metadata"].(map[string]interface{}); ok {
+				userMetadata = metadata
+			}
+			if created, ok := user.Claims["created_at"].(string); ok {
+				createdAt = created
+			}
+		}
+		responseUser["created_at"] = createdAt
+		responseUser["user_metadata"] = userMetadata
+	}
+
+	response := map[string]interface{}{
+		"user": responseUser,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleRefreshToken(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if database is available
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
+		return
+	}
+
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	session, err := authAPI.RefreshToken(r.Context(), req.RefreshToken)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+
+	response := map[string]interface{}{
+		"access_token":  session.AccessToken,
+		"refresh_token": session.RefreshToken,
+		"expires_in":    session.ExpiresIn,
+		"token_type":    session.TokenType,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+func handleGetUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if database is available FIRST - before checking auth
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":   "Authentication service is currently unavailable (database not connected)",
+			"success": false,
+		})
+		return
+	}
+
+	// Now check auth - only if database is available
+	user, err := auth.RequireAuth(r.Context())
+	if err != nil {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	// Try to get full user info from Supabase API
+	authHeader := r.Header.Get("Authorization")
+	var userInfo *auth.UserInfo
+	if authHeader != "" && authAPI != nil {
+		parts := strings.Split(authHeader, " ")
+		if len(parts) == 2 && parts[0] == "Bearer" {
+			// Fetch full user info from Supabase
+			if fullUser, err := authAPI.GetUser(r.Context(), parts[1]); err == nil {
+				userInfo = fullUser
+			}
+		}
+	}
+
+	// Build response with available data
+	responseUser := map[string]interface{}{
+		"id":        user.ID,
+		"email":     user.Email,
+		"tenant_id": user.TenantID,
+		"org_id":    user.OrgID,
+	}
+
+	// Add fields from full user info if available
+	if userInfo != nil {
+		responseUser["created_at"] = userInfo.CreatedAt
+		responseUser["user_metadata"] = userInfo.UserMetadata
+	} else {
+		// Fallback to JWT claims
+		userMetadata := make(map[string]interface{})
+		var createdAt string
+
+		if user.Claims != nil {
+			if metadata, ok := user.Claims["user_metadata"].(map[string]interface{}); ok {
+				userMetadata = metadata
+			}
+			if created, ok := user.Claims["created_at"].(string); ok {
+				createdAt = created
+			}
+		}
+		responseUser["created_at"] = createdAt
+		responseUser["user_metadata"] = userMetadata
+	}
+
+	response := map[string]interface{}{
+		"user": responseUser,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// ============================================================================
+// Reasoning Handlers
+// ============================================================================
+
+func handleReasoningStart(w http.ResponseWriter, r *http.Request) {
+	reasoningAPI.HandleStartReasoning(w, r)
+}
+
+func handleReasoningStatus(w http.ResponseWriter, r *http.Request) {
+	reasoningAPI.HandleGetStatus(w, r)
+}
+
+func handleReasoningWebSocket(w http.ResponseWriter, r *http.Request) {
+	reasoningAPI.HandleWebSocket(w, r)
+}
+
+func handleMonitoringStats(w http.ResponseWriter, r *http.Request) {
+	reasoningAPI.HandleGetStats(w, r)
+}
+
+// ============================================================================
+// World Model Routes (NEW)
+// ============================================================================
+
+// Get all facts from world model
+func handleWorldModelFacts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	facts := worldModel.ListAll()
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"facts": facts,
+		"count": len(facts),
 	})
 }
 
-// === DUMMY ADAPTER (for registry when HF is not available) ===
+// Store a fact manually
+func handleWorldModelStore(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Key       string `json:"key"`
+		Value     string `json:"value"`
+		Source    string `json:"source"`
+		SessionID string `json:"session_id"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	err := worldModel.Store(r.Context(), req.Key, req.Value, req.Source, req.SessionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success": true,
+		"message": "Fact stored successfully",
+	})
+}
+
+// Search world model
+func handleWorldModelSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	query := r.URL.Query().Get("q")
+	if query == "" {
+		http.Error(w, "Query parameter 'q' is required", http.StatusBadRequest)
+		return
+	}
+
+	facts := worldModel.Search(r.Context(), query, 10)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"query": query,
+		"facts": facts,
+		"count": len(facts),
+	})
+}
+
+// Handle multi-agent workflow
+func handleAgentWorkflow(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req struct {
+		Prompt string `json:"prompt"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Create session
+	sessionID := reasoningAPI.Engine.InitSession(r.Context(), req.Prompt)
+
+	// Create simple workflow with world model (NEW: pass worldModel)
+	workflow := reasoning.NewSimpleAgentWorkflow(reasoningAPI.Engine.Orchestrator.Router, sessionID, worldModel)
+	workflow.OnEvent = reasoningAPI.BroadcastEvent
+
+	// Execute workflow synchronously (caller can use WS for events)
+	result, err := workflow.Execute(r.Context(), req.Prompt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Return result
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"session_id":   sessionID,
+		"final_output": result.FinalOutput,
+		"steps":        result.Steps,
+		"duration_ms":  result.Duration.Milliseconds(),
+		"agent_count":  len(result.Steps),
+	})
+}
+
+// ============================================================================
+// Dummy Adapter (for HuggingFace fallback)
+// ============================================================================
 
 type DummyAdapter struct{}
 
-func (d *DummyAdapter) Name() string                              { return "dummy" }
-func (d *DummyAdapter) Provider() string                          { return "dummy" }
-func (d *DummyAdapter) SupportedTasks() []models.TaskType         { return nil }
-func (d *DummyAdapter) RequiresAuth() bool                        { return false }
-func (d *DummyAdapter) GetCapabilities() models.ModelCapabilities { return models.ModelCapabilities{} }
-func (d *DummyAdapter) GetCost() models.CostInfo                  { return models.CostInfo{} }
-func (d *DummyAdapter) HealthCheck() error                        { return nil }
+func (d *DummyAdapter) Name() string                      { return "dummy" }
+func (d *DummyAdapter) Provider() string                  { return "dummy" }
+func (d *DummyAdapter) SupportedTasks() []models.TaskType { return []models.TaskType{} }
+func (d *DummyAdapter) RequiresAuth() bool                { return false }
+func (d *DummyAdapter) GetCapabilities() models.ModelCapabilities {
+	return models.ModelCapabilities{}
+}
+func (d *DummyAdapter) GetCost() models.CostInfo {
+	return models.CostInfo{}
+}
+func (d *DummyAdapter) HealthCheck() error { return nil }
 func (d *DummyAdapter) GenerateText(ctx context.Context, modelName string, req *uaip.UAIPRequest) (*uaip.UAIPResponse, error) {
-	return nil, fmt.Errorf("dummy adapter")
+	return nil, fmt.Errorf("dummy adapter cannot generate text")
 }
