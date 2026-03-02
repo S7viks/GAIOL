@@ -34,7 +34,11 @@
       ...opts,
       headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts && opts.headers || {}) }
     });
-    if (res.status === 401) { window.location.href = '/login'; return; }
+    if (res.status === 401) {
+      if (typeof clearTokens === 'function') clearTokens();
+      window.location.href = '/login';
+      return;
+    }
     const text = await res.text();
     if (!text) return null;
     try { return JSON.parse(text); } catch (e) { return text; }

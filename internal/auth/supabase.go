@@ -56,7 +56,11 @@ func AuthMiddleware(db *database.Client) func(http.Handler) http.Handler {
 
 			tokenString := parts[1]
 
-			// Verify and parse JWT token
+			if db == nil {
+				http.Error(w, "Authentication service unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			// Verify and parse JWT token (uses SUPABASE_JWT_SECRET when set)
 			user, err := VerifyToken(tokenString, db.APIKey)
 			if err != nil {
 				http.Error(w, "Invalid or expired token: "+err.Error(), http.StatusUnauthorized)
