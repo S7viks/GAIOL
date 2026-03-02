@@ -87,9 +87,6 @@ func main() {
 			dbAvailable = false
 		} else {
 			log.Println("✅ Database client initialized")
-			if os.Getenv("SUPABASE_JWT_SECRET") == "" {
-				log.Printf("⚠️  SUPABASE_JWT_SECRET is not set - dashboard will redirect to login after sign-in. Set it from Supabase Dashboard > Settings > API > JWT Secret")
-			}
 			authAPI = auth.NewAuthAPI(dbClient)
 			tracker = models.NewPerformanceTracker(dbClient)
 			// Refresh cache asynchronously to avoid blocking startup
