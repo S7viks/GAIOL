@@ -79,12 +79,24 @@ function loadPageContent(pageId) {
 }
 
 /**
- * Toggle left sidebar
+ * Toggle left sidebar (desktop: collapsed = hidden; mobile: open = visible)
  */
 function toggleLeftSidebar() {
     const sidebar = document.getElementById('leftSidebar');
-    if (sidebar) {
+    if (!sidebar) return;
+    const isCollapsed = sidebar.classList.contains('collapsed');
+    const isOpen = sidebar.classList.contains('open');
+    // Desktop: toggle collapsed. Mobile: open means "drawer visible", so toggle open and keep collapsed false when showing
+    if (window.innerWidth <= 768) {
+        sidebar.classList.toggle('open');
+        if (sidebar.classList.contains('open')) {
+            sidebar.classList.remove('collapsed');
+        } else {
+            sidebar.classList.add('collapsed');
+        }
+    } else {
         sidebar.classList.toggle('collapsed');
+        sidebar.classList.remove('open');
     }
 }
 
