@@ -67,15 +67,10 @@ func main() {
 		ollamaAdapter = nil
 	}
 
-	// 2. HuggingFace and 3. OpenRouter: no env keys for tenant-facing API (Phase 4).
-	// Tenant inference uses provider keys from DB only. Empty adapters here for fallback when DB/keys unavailable.
-	hfAdapter := adapters.NewHuggingFaceAdapter("", "")
-	openRouterAdapter := adapters.NewOpenRouterAdapter("", "")
-	fmt.Println("✅ HuggingFace and OpenRouter adapters initialized (tenant keys from DB)")
-
-	// Create registry with priority: Ollama > HF > OpenRouter
-	registry = models.NewRegistry(openRouterAdapter, hfAdapter, ollamaAdapter)
-	fmt.Printf("📋 Registry initialized with %d models\n", registry.Count())
+	// 2. Global registry: keep it empty for the tenant-facing API.
+	// All real model definitions come from tenant configuration (tenant_models).
+	registry = models.NewEmptyRegistry()
+	fmt.Printf("📋 Global registry initialized empty (tenant-defined models only at runtime)\n")
 
 	// Initialize database (optional)
 	var err error
@@ -632,12 +627,11 @@ func buildTenantRegistry(ctx context.Context, db *database.Client, tenantID stri
 	if k := legacyKeys["huggingface"]; k != "" {
 		hfAdapter = adapters.NewHuggingFaceAdapter("", k)
 	}
-
-	reg := models.NewRegistry(openRouterAdapter, hfAdapter, nil)
 	if k := legacyKeys["google"]; k != "" {
 		geminiAdapter = adapters.NewGeminiAdapter(k)
-		reg.AddGeminiModels(geminiAdapter)
 	}
+
+	reg := models.NewEmptyRegistry()
 
 	adapterByProvider := map[string]models.ModelAdapter{}
 	if openRouterAdapter != nil {
