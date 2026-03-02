@@ -76,7 +76,7 @@
       '<div class="card"><div class="label">Requests</div><div class="value">' + (summary.requests || 0) + '</div></div>' +
       '<div class="card"><div class="label">Cost</div><div class="value">$' + (Number(summary.cost || 0).toFixed(4)) + '</div></div>' +
       '<div class="card"><div class="label">GAIOL keys</div><div class="value">' + (keys.length || 0) + '</div></div>' +
-      '<div class="card"><div class="label">Providers</div><div class="value">' + (providers.length || 0) + '</div></div>' +
+      '<div class="card"><div class="label">APIs</div><div class="value">' + (providers.length || 0) + '</div></div>' +
       '</div>' +
       '<p><a href="/dashboard/usage" class="btn btn-secondary">Usage</a> <a href="/dashboard/billing" class="btn btn-secondary">Billing</a> <a href="/dashboard/models" class="btn btn-secondary">Models</a> <a href="/dashboard/api-keys" class="btn btn-secondary">API keys</a></p>';
     return html;
@@ -179,11 +179,9 @@
   }
 
   function renderModelsV2(state) {
-    const providerKeys = state.providerKeys || [];
     const customProviders = (state.customProviders && state.customProviders.providers) || [];
     const tenantModels = (state.tenantModels && state.tenantModels.models) || [];
     const tenantAvailable = (state.tenantAvailable && state.tenantAvailable.models) || [];
-    const catalog = (state.catalog && state.catalog.models) || [];
     const prefs = state.preferences || {};
 
     const legacyProviders = ['openrouter', 'google', 'huggingface'];
@@ -194,81 +192,46 @@
     customProviders.forEach(function(p) { byCustom[p.provider_key] = p; });
 
     let html = '';
-    html += '<h3>Connect providers</h3>';
-    html += '<p class="muted">Pick models first if you want. When you select a model, we’ll tell you which provider key you need to connect.</p>';
 
-    // Legacy/built-in providers (existing UX)
-    legacyProviders.forEach(function(prov) {
-      const k = byLegacy[prov];
-      html += '<div class="card" style="margin-bottom:1rem;"><strong>' + escapeHtml(prov) + '</strong> ';
-      if (k && k.key_hint) html += 'Connected (' + escapeHtml(k.key_hint || '') + ') <button class="btn btn-secondary btn-remove-key" data-provider="' + escapeHtml(prov) + '">Remove</button>';
-      else html += 'Not connected <button class="btn btn-add-key" data-provider="' + escapeHtml(prov) + '">Add key</button>';
-      html += '<div class="form-group form-add-key" id="form-' + escapeHtml(prov) + '" style="display:none; margin-top:0.5rem;">' +
-        '<input type="password" placeholder="API key" id="input-' + escapeHtml(prov) + '">' +
-        '<button class="btn btn-save-key" data-provider="' + escapeHtml(prov) + '">Save</button>' +
-        '</div></div>';
-    });
+    html += '<h3>LLM APIs</h3>';
+    html += '<p class="muted">Add any LLM API: base URL and API key. We support OpenAI-compatible (<code>/v1/chat/completions</code>) and Anthropic (<code>/v1/messages</code>). Use a name to identify the API (e.g. openai, my-proxy).</p>';
 
-    // Custom providers (new universal path)
-    html += '<h3 style="margin-top:1.5rem;">Custom providers (advanced)</h3>';
-    html += '<p class="muted">Add any provider endpoint + API key. For OpenAI-compatible APIs we call <code>/v1/chat/completions</code>. For Anthropic we use <code>/v1/messages</code>.</p>';
+    html += '<div class="card" style="margin-bottom:1rem;max-width:640px;">';
+    html += '<div class="form-group"><label>API name</label><input id="newProviderKey" placeholder="e.g. openai, together, my-gateway"></div>';
+    html += '<div class="form-group"><label>Base URL</label><input id="newBaseUrl" placeholder="e.g. https://api.openai.com or https://api.together.xyz/v1"></div>';
+    html += '<div class="form-group"><label>API key</label><input type="password" id="newApiKey" placeholder="Your API key"></div>';
+    html += '<div class="form-group"><label>API type</label><select id="newProviderType"><option value="openai_compatible">OpenAI-compatible</option><option value="anthropic_messages">Anthropic</option></select></div>';
+    html += '<button class="btn" id="btnAddProvider">Add API</button>';
+    html += '</div>';
 
-    const templates = [
-      // Foundation model providers
-      { key: 'openai', label: 'OpenAI', provider_type: 'openai_compatible', base_url: 'https://api.openai.com', note: 'GPT models via OpenAI-compatible API.' },
-      { key: 'anthropic', label: 'Anthropic', provider_type: 'anthropic_messages', base_url: 'https://api.anthropic.com', note: 'Claude models via Anthropic Messages API.' },
-      { key: 'deepseek', label: 'DeepSeek', provider_type: 'openai_compatible', base_url: 'https://api.deepseek.com', note: 'DeepSeek models via OpenAI-compatible API.' },
-      { key: 'xai', label: 'xAI', provider_type: 'openai_compatible', base_url: 'https://api.x.ai/v1', note: 'Grok models (by xAI) via OpenAI-compatible API.' },
-      { key: 'groq', label: 'Groq', provider_type: 'openai_compatible', base_url: 'https://api.groq.com/openai/v1', note: 'Groq inference platform (not xAI Grok). Hosts Llama, Mistral, Gemma, etc. at low latency.' },
-      { key: 'together', label: 'Together', provider_type: 'openai_compatible', base_url: 'https://api.together.xyz/v1', note: 'Open weights + hosted models via OpenAI-compatible API.' },
-      { key: 'fireworks', label: 'Fireworks', provider_type: 'openai_compatible', base_url: 'https://api.fireworks.ai/inference/v1', note: 'Fireworks models via OpenAI-compatible API.' },
-      { key: 'mistral', label: 'Mistral', provider_type: 'openai_compatible', base_url: 'https://api.mistral.ai/v1', note: 'Mistral models via OpenAI-compatible API.' },
-      { key: 'perplexity', label: 'Perplexity', provider_type: 'openai_compatible', base_url: 'https://api.perplexity.ai', note: 'Perplexity models via OpenAI-compatible API.' },
-
-      // Generic catch-all
-      { key: 'custom', label: 'Any OpenAI-compatible', provider_type: 'openai_compatible', base_url: '', note: 'Any OpenAI-style provider/proxy/local gateway that supports /v1/chat/completions.' },
-    ];
-
-    templates.forEach(function(tpl) {
-      const existing = tpl.key !== 'custom' ? byCustom[tpl.key] : null;
-      const cardTitle = tpl.key === 'custom' ? 'openai_compatible provider' : (tpl.label + ' (' + tpl.provider_type + ')');
-      html += '<div class="card" style="margin-bottom:1rem;">';
-      html += '<div style="display:flex;justify-content:space-between;gap:1rem;align-items:center;flex-wrap:wrap;">';
-      html += '<div><strong>' + escapeHtml(cardTitle) + '</strong><div class="muted" style="font-size:0.85rem;margin-top:0.25rem;">' + escapeHtml(tpl.note) + '</div></div>';
-      if (existing && existing.key_hint) {
-        html += '<div>Connected (' + escapeHtml(existing.key_hint) + ') <button class="btn btn-secondary btn-remove-custom-provider" data-provider-key="' + escapeHtml(existing.provider_key) + '">Remove</button></div>';
-      } else {
-        html += '<button class="btn btn-secondary btn-add-custom-provider" data-template="' + escapeHtml(tpl.key) + '">Connect</button>';
-      }
-      html += '</div>';
-
-      const formId = 'custom-provider-form-' + tpl.key;
-      html += '<div id="' + escapeHtml(formId) + '" style="display:none;margin-top:0.75rem;">';
-      html += '<div class="form-group"><label>Provider key</label><input id="cp-key-' + escapeHtml(tpl.key) + '" value="' + escapeHtml(tpl.key === 'custom' ? '' : tpl.key) + '" placeholder="e.g. together, groq, my-gateway"></div>';
-      html += '<div class="form-group"><label>Provider type</label><input id="cp-type-' + escapeHtml(tpl.key) + '" value="' + escapeHtml(tpl.provider_type) + '" placeholder="openai_compatible or anthropic_messages"></div>';
-      html += '<div class="form-group"><label>Base URL</label><input id="cp-url-' + escapeHtml(tpl.key) + '" value="' + escapeHtml(tpl.base_url) + '" placeholder="e.g. https://api.openai.com"></div>';
-      html += '<div class="form-group"><label>API key</label><input type="password" id="cp-api-' + escapeHtml(tpl.key) + '" placeholder="secret"></div>';
-      html += '<button class="btn btn-save-custom-provider" data-template="' + escapeHtml(tpl.key) + '">Save provider</button>';
-      html += '</div></div>';
-    });
+    if (customProviders.length > 0) {
+      html += '<h4 style="margin-top:1rem;">Your APIs</h4>';
+      html += '<table><thead><tr><th>Name</th><th>Type</th><th>Base URL</th><th></th></tr></thead><tbody>';
+      customProviders.forEach(function(p) {
+        var urlShort = (p.base_url || '').replace(/^https?:\/\//, '').slice(0, 50);
+        if ((p.base_url || '').length > 50) urlShort += '...';
+        html += '<tr><td><code>' + escapeHtml(p.provider_key || '') + '</code></td><td>' + escapeHtml(p.provider_type || '') + '</td><td class="muted" style="font-size:0.85rem;">' + escapeHtml(urlShort) + '</td><td><button class="btn btn-secondary btn-remove-custom-provider" data-provider-key="' + escapeHtml(p.provider_key || '') + '">Remove</button></td></tr>';
+      });
+      html += '</tbody></table>';
+    }
 
     // Register models for custom providers
-    html += '<h3 style="margin-top:1.5rem;">Register models</h3>';
-    html += '<p class="muted">For custom providers, add the model IDs you want to route to. You can then request them via <code>provider_key:model_id</code> (or call <code>/v1/chat</code> with <code>provider_key</code> + <code>model_id</code>).</p>';
+    html += '<h3 style="margin-top:1.5rem;">Models</h3>';
+    html += '<p class="muted">For each API above, add the model IDs you want to use. You can then call chat with <code>api_name:model_id</code> or set a default in Settings.</p>';
     const selectableProviders = customProviders.map(function(p) { return p.provider_key; });
     html += '<div class="card" style="margin-bottom:1rem;max-width:720px;">';
-    html += '<div class="form-group"><label>Provider</label><select id="tmProvider" style="width:100%;max-width:400px;padding:0.5rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);">';
-    html += '<option value="">Select provider</option>';
+    html += '<div class="form-group"><label>API (provider)</label><select id="tmProvider" style="width:100%;max-width:400px;padding:0.5rem;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);">';
+    html += '<option value="">Select API</option>';
     selectableProviders.forEach(function(pk) { html += '<option value="' + escapeHtml(pk) + '">' + escapeHtml(pk) + '</option>'; });
     html += '</select></div>';
     html += '<div class="form-group"><label>Model ID</label><input id="tmModelId" placeholder="e.g. claude-3-5-sonnet-20241022, gpt-4o-mini, deepseek-chat"></div>';
     html += '<div class="form-group"><label>Display name (optional)</label><input id="tmDisplayName" placeholder="e.g. Claude 3.5 Sonnet"></div>';
-    html += '<button class="btn" id="btnSaveTenantModel">Save model</button>';
+    html += '<button class="btn" id="btnSaveTenantModel">Add model</button>';
     html += '</div>';
 
     if (tenantModels.length > 0) {
-      html += '<h3>Your registered models</h3>';
-      html += '<table><thead><tr><th>Provider</th><th>Model ID</th><th>Display name</th><th></th></tr></thead><tbody>';
+      html += '<h4 style="margin-top:1rem;">Your registered models</h4>';
+      html += '<table><thead><tr><th>API</th><th>Model ID</th><th>Display name</th><th></th></tr></thead><tbody>';
       tenantModels.forEach(function(m) {
         html += '<tr>' +
           '<td><code>' + escapeHtml(m.provider_key || '') + '</code></td>' +
@@ -280,24 +243,14 @@
       html += '</tbody></table>';
     }
 
-    // Tenant-available models list (what can actually be used right now)
-    html += '<h3 style="margin-top:1.5rem;">Models available (usable now)</h3>';
+    html += '<h3 style="margin-top:1.5rem;">Available to use</h3>';
     if (tenantAvailable.length > 0) {
-      html += '<p class="muted">These are the model IDs that are currently available for your tenant.</p>';
-      html += '<div class="form-group"><input id="modelSearch" placeholder="Search models (id, provider, name)" style="max-width:480px;"></div>';
-      html += '<table><thead><tr><th>ID</th><th>Provider</th><th></th></tr></thead><tbody id="modelCatalogBody"></tbody></table>';
-      // Body will be filled by JS for filtering
+      html += '<p class="muted">Models you can use in chat. Set a default in Settings.</p>';
+      html += '<div class="form-group"><input id="modelSearch" placeholder="Search by id, API name, or display name" style="max-width:480px;"></div>';
+      html += '<table><thead><tr><th>ID</th><th>API</th><th></th></tr></thead><tbody id="modelCatalogBody"></tbody></table>';
       html += '<div class="muted" style="margin-top:0.5rem;">Default model: <code>' + escapeHtml(prefs.default_model_id || 'auto') + '</code></div>';
     } else {
-      html += '<p class="empty">No models available yet. Connect a provider key or add a custom provider + model.</p>';
-    }
-
-    // Global catalog (help users pick a model, mostly OpenRouter/HF/Gemini)
-    if (catalog.length > 0) {
-      html += '<h3 style="margin-top:1.5rem;">Model catalog</h3>';
-      html += '<p class="muted">Browse models we know about (mainly built-in providers). Selecting a model will tell you which provider key to connect.</p>';
-      html += '<div class="form-group"><input id="globalModelSearch" placeholder="Search global catalog" style="max-width:480px;"></div>';
-      html += '<table><thead><tr><th>ID</th><th>Display name</th><th>Provider</th><th></th></tr></thead><tbody id="globalCatalogBody"></tbody></table>';
+      html += '<p class="empty">No models yet. Add an LLM API above, then add model IDs for that API.</p>';
     }
 
     return html;
@@ -330,7 +283,7 @@
     html += '<div class="form-group"><label>Default model</label><select id="prefDefaultModel"><option value="">Use auto</option>';
     models.forEach(function(m) { html += '<option value="' + (m.id || '') + '"' + (defaultModel === m.id ? ' selected' : '') + '>' + (m.display_name || m.id) + '</option>'; });
     html += '</select></div><button class="btn" id="btnSavePrefs">Save preferences</button>';
-    html += '<p style="margin-top:1rem;"><a href="/dashboard/models" class="btn btn-secondary">Manage provider keys</a></p></div>';
+    html += '<p style="margin-top:1rem;"><a href="/dashboard/models" class="btn btn-secondary">Manage APIs and models</a></p></div>';
     return html;
   }
 
@@ -338,8 +291,9 @@
     setActiveNav();
     if (page === 'home') {
       setTitle('Dashboard');
-      const [usage, gaiolKeys, providerKeys, preferences] = await Promise.all([api('/api/usage'), api('/api/gaiol-keys'), api('/api/settings/provider-keys'), api('/api/settings/preferences')]);
-      content.innerHTML = renderHome({ usage, gaiolKeys, providerKeys, preferences });
+      const [usage, gaiolKeys, customProviders, preferences] = await Promise.all([api('/api/usage'), api('/api/gaiol-keys'), api('/api/settings/providers'), api('/api/settings/preferences')]);
+      const providers = (customProviders && customProviders.providers) || [];
+      content.innerHTML = renderHome({ usage, gaiolKeys, providerKeys: providers, preferences });
     } else if (page === 'usage') {
       setTitle('Usage');
       const data = await api('/api/usage');
@@ -366,72 +320,44 @@
       content.innerHTML = renderBilling(summary || {}, history || {});
     } else if (page === 'models') {
       setTitle('Models');
-      const [providerKeys, customProviders, tenantModels, tenantAvailable, catalog, preferences] = await Promise.all([
-        api('/api/settings/provider-keys'),
+      const [customProviders, tenantModels, tenantAvailable, preferences] = await Promise.all([
         api('/api/settings/providers'),
         api('/api/settings/models'),
         api('/api/tenant/models'),
-        api('/api/models'),
         api('/api/settings/preferences')
       ]);
       content.innerHTML = renderModelsV2({
-        providerKeys: providerKeys || [],
         customProviders: customProviders || { providers: [] },
         tenantModels: tenantModels || { models: [] },
         tenantAvailable: tenantAvailable || { models: [] },
-        catalog: catalog || { models: [] },
         preferences: preferences || {}
       });
 
-      // Legacy provider key handlers
-      content.querySelectorAll('.btn-add-key').forEach(function(btn) {
-        btn.onclick = function() { document.getElementById('form-' + btn.dataset.provider).style.display = 'block'; };
-      });
-      content.querySelectorAll('.btn-save-key').forEach(function(btn) {
-        btn.onclick = async function() {
-          const prov = btn.dataset.provider;
-          const key = document.getElementById('input-' + prov).value;
-          if (!key) return;
-          const res = await fetch('/api/settings/provider-keys', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getAccessToken() }, body: JSON.stringify({ provider: prov, api_key: key }) });
-          if (res.ok) showPage('models');
-        };
-      });
-      content.querySelectorAll('.btn-remove-key').forEach(function(btn) {
-        btn.onclick = async function() {
-          if (!confirm('Remove this provider key?')) return;
-          await fetch('/api/settings/provider-keys?provider=' + encodeURIComponent(btn.dataset.provider), { method: 'DELETE', headers: { Authorization: 'Bearer ' + getAccessToken() } });
-          showPage('models');
-        };
-      });
-
-      // Custom providers handlers
-      content.querySelectorAll('.btn-add-custom-provider').forEach(function(btn) {
-        btn.onclick = function() {
-          const tpl = btn.dataset.template;
-          const el = document.getElementById('custom-provider-form-' + tpl);
-          if (el) el.style.display = 'block';
-        };
-      });
-      content.querySelectorAll('.btn-save-custom-provider').forEach(function(btn) {
-        btn.onclick = async function() {
-          const tpl = btn.dataset.template;
-          const providerKey = (document.getElementById('cp-key-' + tpl) || {}).value || '';
-          const providerType = (document.getElementById('cp-type-' + tpl) || {}).value || '';
-          const baseUrl = (document.getElementById('cp-url-' + tpl) || {}).value || '';
-          const apiKey = (document.getElementById('cp-api-' + tpl) || {}).value || '';
-          if (!providerKey || !apiKey) return;
-          const res = await fetch('/api/settings/providers', {
+      var btnAddProvider = document.getElementById('btnAddProvider');
+      if (btnAddProvider) {
+        btnAddProvider.onclick = async function() {
+          var providerKey = (document.getElementById('newProviderKey') || {}).value || '';
+          var baseUrl = (document.getElementById('newBaseUrl') || {}).value || '';
+          var apiKey = (document.getElementById('newApiKey') || {}).value || '';
+          var providerType = (document.getElementById('newProviderType') || {}).value || 'openai_compatible';
+          providerKey = providerKey.trim();
+          baseUrl = (baseUrl || '').trim().replace(/\/+$/, '');
+          if (!providerKey || !baseUrl || !apiKey) {
+            alert('API name, Base URL, and API key are required.');
+            return;
+          }
+          var res = await fetch('/api/settings/providers', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getAccessToken() },
             body: JSON.stringify({ provider_key: providerKey, provider_type: providerType, base_url: baseUrl, api_key: apiKey })
           });
           if (res.ok) showPage('models');
-          else alert(await res.text());
+          else alert(await res.text().then(function(t) { return t || res.statusText; }));
         };
-      });
+      }
       content.querySelectorAll('.btn-remove-custom-provider').forEach(function(btn) {
         btn.onclick = async function() {
-          if (!confirm('Remove this provider?')) return;
+          if (!confirm('Remove this API?')) return;
           await fetch('/api/settings/providers?provider_key=' + encodeURIComponent(btn.dataset.providerKey), { method: 'DELETE', headers: { Authorization: 'Bearer ' + getAccessToken() } });
           showPage('models');
         };
@@ -497,60 +423,6 @@
       }
       renderUsable('');
       if (searchEl) searchEl.oninput = function() { renderUsable(searchEl.value); };
-
-      // Fill global catalog (helps user pick a model then connect provider)
-      const global = (catalog && catalog.models) || [];
-      const gBody = document.getElementById('globalCatalogBody');
-      const gSearch = document.getElementById('globalModelSearch');
-      function connectHint(provider) {
-        if (provider === 'openrouter' || provider === 'huggingface' || provider === 'google' || provider === 'gemini') return provider === 'gemini' ? 'google' : provider;
-        if (provider === 'ollama') return 'ollama';
-        return provider;
-      }
-      function renderGlobal(filter) {
-        if (!gBody) return;
-        const q = (filter || '').toLowerCase().trim();
-        const rows = global.filter(function(m) {
-          const id = String(m.id || '');
-          const p = String(m.provider || '');
-          const name = String(m.display_name || '');
-          if (!q) return true;
-          return id.toLowerCase().includes(q) || p.toLowerCase().includes(q) || name.toLowerCase().includes(q);
-        }).slice(0, 200);
-        gBody.innerHTML = rows.map(function(m) {
-          const id = String(m.id || '');
-          const provider = String(m.provider || providerFromModelId(id) || '');
-          const display = String(m.display_name || '');
-          const hint = connectHint(provider);
-          let action = '';
-          if (hint === 'ollama') action = '<span class="muted">Local (no key)</span>';
-          else action = '<button class="btn btn-secondary btn-connect-for-model" data-provider="' + escapeHtml(hint) + '">Connect provider</button>';
-          return '<tr>' +
-            '<td><code>' + escapeHtml(id) + '</code></td>' +
-            '<td>' + escapeHtml(display) + '</td>' +
-            '<td>' + escapeHtml(provider) + '</td>' +
-            '<td>' + action + '</td>' +
-            '</tr>';
-        }).join('');
-        gBody.querySelectorAll('.btn-connect-for-model').forEach(function(b) {
-          b.onclick = function() {
-            const prov = b.dataset.provider;
-            // If it's a legacy provider, open its key form.
-            const legacyForm = document.getElementById('form-' + prov);
-            if (legacyForm) {
-              legacyForm.style.display = 'block';
-              const input = document.getElementById('input-' + prov);
-              if (input) input.focus();
-              return;
-            }
-            // Otherwise show advanced connect template if present.
-            const adv = document.getElementById('custom-provider-form-' + prov);
-            if (adv) adv.style.display = 'block';
-          };
-        });
-      }
-      renderGlobal('');
-      if (gSearch) gSearch.oninput = function() { renderGlobal(gSearch.value); };
     } else if (page === 'api-keys') {
       setTitle('API keys');
       const keys = await api('/api/gaiol-keys');
