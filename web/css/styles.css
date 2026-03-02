@@ -23,30 +23,21 @@ svg {
 }
 
 :root {
-    /* Nexus-One Dark Theme - Hunter Green & Cream */
-    --bg-primary: #355E3B;
-    /* Hunter Green */
-    --bg-secondary: #2E5233;
-    /* Darker Hunter Green */
-    --bg-tertiary: #264027;
-    /* Darkest Hunter Green */
-    --text-primary: #FFFDD0;
-    /* Cream */
-    --text-secondary: #FBF9CC;
-    /* Lighter Cream */
-    --text-tertiary: #F7F5C5;
-    /* Muted Cream */
-    --border-color: rgba(255, 253, 208, 0.15);
-    --border-glow: rgba(255, 253, 208, 0.2);
-    --accent-primary: #FFFDD0;
-    /* Cream */
-    --accent-secondary: #FBF9CC;
-    /* Lighter Cream */
-    --accent-violet: #F7F5C5;
-    /* Muted Cream for consistency */
-    --accent-hover: #F0EDB8;
-    /* Darker Cream */
-    --success-color: #10b981;
+    /* Terminal UI - Dark theme (matches login/signup/landing) */
+    --bg-primary: #0c0c0e;
+    --bg-secondary: #131316;
+    --bg-tertiary: #18181b;
+    --text-primary: #e4e4e7;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --border-color: #27272a;
+    --border-glow: rgba(6, 182, 212, 0.25);
+    --accent-primary: #06b6d4;
+    --accent-secondary: #22c55e;
+    --accent-violet: #818cf8;
+    --accent-hover: #22d3ee;
+    --accent-color: #6366f1;
+    --success-color: #22c55e;
     --error-color: #ef4444;
 
     /* Spacing System */
@@ -76,9 +67,9 @@ svg {
     --radius-lg: 20px;
 
     /* Utilities */
-    --glass-bg: rgba(53, 94, 59, 0.75);
-    --glass-border: rgba(255, 253, 208, 0.1);
-    --shadow-neon: 0 0 20px rgba(255, 253, 208, 0.15);
+    --glass-bg: rgba(19, 19, 22, 0.95);
+    --glass-border: rgba(39, 39, 42, 0.9);
+    --shadow-neon: 0 0 20px rgba(6, 182, 212, 0.12);
 }
 
 
@@ -97,7 +88,7 @@ html {
 }
 
 body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+    font-family: var(--font-mono), 'Fira Code', Consolas, monospace;
     background: var(--bg-primary);
     color: var(--text-primary);
     height: 100vh;
@@ -110,7 +101,7 @@ body {
     position: relative;
 }
 
-/* Cosmic Background */
+/* Terminal-style subtle background */
 body::before {
     content: '';
     position: fixed;
@@ -118,8 +109,7 @@ body::before {
     left: 0;
     width: 100%;
     height: 100%;
-    background: radial-gradient(circle at 50% 50%, rgba(0, 229, 255, 0.03) 0%, transparent 70%),
-        radial-gradient(circle at 100% 0%, rgba(126, 87, 194, 0.05) 0%, transparent 50%);
+    background: radial-gradient(ellipse 80% 50% at 50% 0%, rgba(6, 182, 212, 0.06) 0%, transparent 50%);
     pointer-events: none;
     z-index: -1;
 }
@@ -157,12 +147,12 @@ body::before {
     box-shadow: var(--shadow-neon);
 }
 
-/* Top Bar - Nexus-One Glass */
+/* Top Bar - Terminal */
 .top-bar {
     height: var(--top-bar-height);
-    background: rgba(10, 10, 11, 0.4);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
+    background: var(--bg-secondary);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border-color);
     display: flex;
     align-items: center;
@@ -411,15 +401,15 @@ body::before {
 }
 
 .model-selector-content::-webkit-scrollbar-thumb {
-    background: rgba(255, 253, 208, 0.2);
+    background: rgba(6, 182, 212, 0.15);
     border-radius: 3px;
     border: 1px solid transparent;
     background-clip: padding-box;
 }
 
 .model-selector-content::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 253, 208, 0.35);
-    border-color: rgba(255, 253, 208, 0.1);
+    background: rgba(6, 182, 212, 0.25);
+    border-color: rgba(39, 39, 42, 0.8);
 }
 
 .model-selector-item {
@@ -442,7 +432,7 @@ body::before {
 }
 
 .model-selector-item.selected {
-    background: rgba(255, 253, 208, 0.08);
+    background: rgba(6, 182, 212, 0.08);
 }
 
 .model-selector-item input[type="checkbox"] {
@@ -608,7 +598,7 @@ body::before {
 .input-action-btn:hover {
     background: rgba(255, 255, 255, 0.08);
     color: var(--accent-primary);
-    border-color: rgba(255, 253, 208, 0.15);
+    border-color: rgba(39, 39, 42, 0.9);
     transform: translateY(-1px);
 }
 
@@ -654,11 +644,9 @@ body::before {
 .left-sidebar {
     width: var(--sidebar-width);
     min-width: var(--sidebar-width);
-    background: var(--glass-bg);
-    backdrop-filter: blur(25px);
-    -webkit-backdrop-filter: blur(25px);
-    border: 1px solid var(--glass-border);
-    border-radius: var(--radius-lg);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
     display: flex;
     flex-direction: column;
     transition: all 0.4s cubic-bezier(0.19, 1, 0.22, 1);
@@ -741,17 +729,17 @@ body::before {
 }
 
 .nav-item:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.04);
     color: var(--accent-primary);
-    border-color: rgba(0, 229, 255, 0.1);
+    border-color: rgba(6, 182, 212, 0.2);
     transform: translateX(4px);
 }
 
 .nav-item.active {
-    background: rgba(0, 229, 255, 0.08);
+    background: rgba(6, 182, 212, 0.08);
     color: var(--accent-primary);
-    border-color: rgba(0, 229, 255, 0.2);
-    box-shadow: 0 0 15px rgba(0, 229, 255, 0.05);
+    border-color: rgba(6, 182, 212, 0.3);
+    box-shadow: 0 0 12px rgba(6, 182, 212, 0.06);
 }
 
 .nav-text {
@@ -869,20 +857,18 @@ body::before {
     border-color: var(--accent-color);
 }
 
-/* Main Content - Nexus-One Seamless */
+/* Main Content - Terminal */
 .main-content {
     flex: 1;
     min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    background: rgba(10, 10, 11, 0.2);
-    backdrop-filter: blur(10px);
+    background: var(--bg-primary);
     border: 1px solid var(--border-color);
-    border-radius: var(--radius-lg);
+    border-radius: 8px;
     transition: all 0.4s cubic-bezier(0.19, 1, 0.22, 1);
     position: relative;
-    box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.4);
     height: 100%;
     min-height: 0;
 }
@@ -988,7 +974,7 @@ body::before {
 
 .rag-doc-pill {
     padding: 2px 8px;
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
     border: 1px solid var(--border-color);
     border-radius: 12px;
     color: var(--text-tertiary);
@@ -996,7 +982,7 @@ body::before {
 }
 
 .rag-doc-pill:hover {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
 }
 
@@ -1028,12 +1014,12 @@ body::before {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    box-shadow: 0 4px 15px rgba(0, 229, 255, 0.2);
+    box-shadow: 0 4px 15px rgba(6, 182, 212, 0.2);
 }
 
 .btn-primary:hover {
     background: white;
-    box-shadow: 0 6px 20px rgba(0, 229, 255, 0.4);
+    box-shadow: 0 6px 20px rgba(6, 182, 212, 0.35);
     transform: translateY(-2px);
 }
 
@@ -1082,7 +1068,7 @@ body::before {
 }
 
 .welcome-section h2 {
-    font-family: var(--font-heading);
+    font-family: var(--font-mono);
     font-size: 24px;
     font-weight: 700;
     margin-bottom: 4px;
@@ -1137,7 +1123,7 @@ body::before {
 .action-card-icon {
     width: 28px;
     height: 28px;
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
     border-radius: 8px;
     display: flex;
     align-items: center;
@@ -1156,7 +1142,7 @@ body::before {
 }
 
 .action-card-title {
-    font-family: var(--font-heading);
+    font-family: var(--font-mono);
     font-size: 13px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1235,15 +1221,12 @@ body::before {
 }
 
 .chat-messages::-webkit-scrollbar-thumb {
-    background: rgba(255, 253, 208, 0.2);
+    background: var(--border-color);
     border-radius: 3px;
-    border: 1px solid transparent;
-    background-clip: padding-box;
 }
 
 .chat-messages::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 253, 208, 0.35);
-    border-color: rgba(255, 253, 208, 0.1);
+    background: var(--text-tertiary);
 }
 
 .chat-message {
@@ -1270,14 +1253,12 @@ body::before {
 }
 
 .chat-message.user .chat-message-bubble {
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.6);
     border: 1px solid var(--border-color);
-    border-radius: 14px 14px 4px 14px;
+    border-radius: 8px 8px 2px 8px;
     padding: 12px 18px;
     max-width: 100%;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
 }
 
 .chat-message.assistant {
@@ -1286,14 +1267,12 @@ body::before {
 }
 
 .chat-message.assistant .chat-message-bubble {
-    background: rgba(255, 255, 255, 0.03);
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    background: rgba(19, 19, 22, 0.8);
     border: 1px solid var(--border-color);
-    border-radius: 4px 14px 14px 14px;
+    border-radius: 2px 8px 8px 8px;
     padding: 10px 16px;
     max-width: 100%;
-    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
     position: relative;
     overflow: visible;
 }
@@ -1353,12 +1332,12 @@ body::before {
 }
 
 .chat-message.user .chat-message-header {
-    color: rgba(255, 253, 208, 0.7);
+    color: var(--text-secondary);
     justify-content: flex-end;
 }
 
 .chat-message.assistant .chat-message-header {
-    color: rgba(255, 253, 208, 0.6);
+    color: var(--text-tertiary);
 }
 
 .chat-message-preview {
@@ -1392,7 +1371,7 @@ body::before {
 }
 
 .chat-message.status .chat-message-bubble {
-    border: 1px dashed rgba(255, 253, 208, 0.2);
+    border: 1px dashed rgba(6, 182, 212, 0.15);
     background: rgba(255, 255, 255, 0.02);
 }
 
@@ -1497,7 +1476,7 @@ body::before {
 .chat-status-icon {
     width: 24px;
     height: 24px;
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -1526,7 +1505,7 @@ body::before {
 /* Input Area - Redesigned with Chips */
 .chat-input-area {
     padding: 8px 12px 12px 12px;
-    background: rgba(53, 94, 59, 0.98);
+    background: var(--bg-secondary);
     backdrop-filter: blur(25px);
     -webkit-backdrop-filter: blur(25px);
     flex-shrink: 0;
@@ -1573,7 +1552,7 @@ body::before {
 }
 
 .input-chip:hover {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
     transform: translateY(-1px);
@@ -1596,7 +1575,7 @@ body::before {
 
 .chat-input-wrapper:focus-within {
     border-color: var(--accent-primary);
-    box-shadow: 0 0 0 3px rgba(255, 253, 208, 0.08), 0 12px 40px rgba(0, 0, 0, 0.4);
+    box-shadow: 0 0 0 2px rgba(6, 182, 212, 0.15), 0 4px 12px rgba(0, 0, 0, 0.3);
     background: rgba(20, 20, 25, 0.85);
 }
 
@@ -1631,7 +1610,7 @@ body::before {
     gap: 8px;
     padding: 4px 12px;
     background: rgba(0, 0, 0, 0.25);
-    border-top: 1px solid rgba(255, 253, 208, 0.1);
+    border-top: 1px solid rgba(39, 39, 42, 0.8);
     min-height: 40px;
 }
 
@@ -1655,8 +1634,8 @@ body::before {
     align-items: center;
     gap: 6px;
     padding: 4px 10px;
-    background: rgba(255, 253, 208, 0.05);
-    border: 1px solid rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.5);
+    border: 1px solid rgba(39, 39, 42, 0.8);
     border-radius: 20px;
 }
 
@@ -1707,19 +1686,19 @@ body::before {
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 4px 16px rgba(255, 253, 208, 0.2);
+    box-shadow: 0 4px 16px rgba(6, 182, 212, 0.15);
     flex-shrink: 0;
 }
 
 .chat-send-btn:hover:not(:disabled) {
     transform: translateY(-2px);
-    background: rgba(255, 253, 208, 0.95);
-    box-shadow: 0 6px 24px rgba(255, 253, 208, 0.35);
+    background: var(--accent-hover);
+    box-shadow: 0 6px 24px rgba(6, 182, 212, 0.35);
 }
 
 .chat-send-btn:active:not(:disabled) {
     transform: translateY(0);
-    box-shadow: 0 2px 8px rgba(255, 253, 208, 0.25);
+    box-shadow: 0 2px 8px rgba(6, 182, 212, 0.2);
 }
 
 .chat-send-btn:disabled {
@@ -1871,8 +1850,8 @@ body::before {
     justify-content: center;
     width: 28px;
     height: 28px;
-    background: rgba(255, 253, 208, 0.08);
-    border: 1px solid rgba(255, 253, 208, 0.15);
+    background: rgba(6, 182, 212, 0.08);
+    border: 1px solid rgba(39, 39, 42, 0.9);
     border-radius: 8px;
     color: var(--accent-primary);
     flex-shrink: 0;
@@ -2549,7 +2528,7 @@ body::before {
 }
 
 .nexus-glow-text {
-    text-shadow: 0 0 10px rgba(0, 229, 255, 0.3);
+    text-shadow: 0 0 10px rgba(6, 182, 212, 0.25);
 }
 
 /* Reasoning Engine Component - Thought Process */
@@ -2627,9 +2606,9 @@ body::before {
     font-weight: 600;
     color: var(--accent-primary);
     padding: 2px 8px;
-    border: 1px solid rgba(255, 253, 208, 0.3);
+    border: 1px solid var(--border-color);
     border-radius: 4px;
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
 }
 
 .thought-content {
@@ -2666,7 +2645,7 @@ body::before {
 }
 
 .step-pill.active {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
     opacity: 1;
@@ -2695,9 +2674,9 @@ body::before {
 }
 
 .model-output-mini.winner {
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
     border-color: var(--accent-primary);
-    box-shadow: 0 0 15px rgba(255, 253, 208, 0.05);
+    box-shadow: 0 0 15px rgba(39, 39, 42, 0.5);
 }
 
 .step-detail-mini {
@@ -2920,9 +2899,9 @@ body::before {
 }
 
 .model-card-modern.selected {
-    background: rgba(0, 229, 255, 0.08);
+    background: rgba(6, 182, 212, 0.08);
     border-color: var(--accent-primary);
-    box-shadow: 0 0 20px rgba(0, 229, 255, 0.1);
+    box-shadow: 0 0 20px rgba(6, 182, 212, 0.12);
 }
 
 .model-card-modern.selected::before {
@@ -4599,10 +4578,10 @@ kbd {
 }
 
 .toggle-reasoning-btn.active {
-    background: rgba(255, 253, 208, 0.12);
+    background: rgba(6, 182, 212, 0.12);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    box-shadow: 0 0 12px rgba(255, 253, 208, 0.15);
+    box-shadow: 0 0 12px rgba(39, 39, 42, 0.9);
 }
 
 .toggle-reasoning-btn.active svg {
@@ -4645,24 +4624,24 @@ kbd {
 
 .thought-process-container.high-speed {
     border-left-color: var(--accent-secondary);
-    box-shadow: 0 0 20px rgba(255, 253, 208, 0.1);
+    box-shadow: 0 0 20px rgba(39, 39, 42, 0.8);
     animation: highSpeedPulse 2s infinite ease-in-out;
 }
 
 @keyframes highSpeedPulse {
     0% {
         border-left-width: 2px;
-        box-shadow: 0 0 10px rgba(255, 253, 208, 0.05);
+        box-shadow: 0 0 10px rgba(39, 39, 42, 0.5);
     }
 
     50% {
         border-left-width: 4px;
-        box-shadow: 0 0 25px rgba(255, 253, 208, 0.2);
+        box-shadow: 0 0 25px rgba(6, 182, 212, 0.15);
     }
 
     100% {
         border-left-width: 2px;
-        box-shadow: 0 0 10px rgba(255, 253, 208, 0.05);
+        box-shadow: 0 0 10px rgba(39, 39, 42, 0.5);
     }
 }
 
@@ -4739,7 +4718,7 @@ kbd {
 }
 
 .step-pill.active {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
 }
@@ -4768,8 +4747,8 @@ kbd {
 
 .model-card-mini.winner {
     border-color: var(--accent-primary);
-    background: rgba(255, 253, 208, 0.05);
-    box-shadow: 0 0 10px rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
+    box-shadow: 0 0 10px rgba(39, 39, 42, 0.5);
 }
 
 /* Consensus Badge */
@@ -4832,17 +4811,17 @@ kbd {
 @keyframes pulse {
     0% {
         opacity: 0.4;
-        box-shadow: 0 0 0 0 rgba(255, 253, 208, 0.4);
+        box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.35);
     }
 
     70% {
         opacity: 1;
-        box-shadow: 0 0 0 5px rgba(255, 253, 208, 0);
+        box-shadow: 0 0 0 5px rgba(6, 182, 212, 0);
     }
 
     100% {
         opacity: 0.4;
-        box-shadow: 0 0 0 0 rgba(255, 253, 208, 0);
+        box-shadow: 0 0 0 0 rgba(6, 182, 212, 0);
     }
 }
 
@@ -4967,7 +4946,7 @@ kbd {
     outline: none;
     border-color: var(--accent-primary);
     background: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 0 0 3px rgba(255, 253, 208, 0.1);
+    box-shadow: 0 0 0 3px rgba(39, 39, 42, 0.8);
 }
 
 .models-search-input::placeholder {
@@ -5210,7 +5189,7 @@ kbd {
     align-items: center;
     justify-content: space-between;
     padding: var(--space-md) var(--space-xl);
-    background: rgba(255, 253, 208, 0.05);
+    background: rgba(39, 39, 42, 0.5);
     border-bottom: 1px solid var(--border-color);
     flex-shrink: 0;
 }
@@ -5360,9 +5339,9 @@ kbd {
 }
 
 .model-card-redesigned.selected {
-    background: rgba(255, 253, 208, 0.08);
+    background: rgba(6, 182, 212, 0.08);
     border-color: var(--accent-primary);
-    box-shadow: 0 0 20px rgba(255, 253, 208, 0.15);
+    box-shadow: 0 0 20px rgba(39, 39, 42, 0.9);
 }
 
 .model-card-redesigned.selected::before {
@@ -5479,9 +5458,9 @@ kbd {
 }
 
 .model-card-cost.premium {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     color: var(--accent-primary);
-    border: 1px solid rgba(255, 253, 208, 0.2);
+    border: 1px solid rgba(6, 182, 212, 0.15);
 }
 
 .model-card-metrics {
@@ -5630,10 +5609,10 @@ kbd {
 }
 
 .filter-option-btn.active {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
     color: var(--accent-primary);
-    box-shadow: 0 0 0 2px rgba(255, 253, 208, 0.1);
+    box-shadow: 0 0 0 2px rgba(39, 39, 42, 0.8);
 }
 
 .filter-tags-redesigned {
@@ -5839,9 +5818,9 @@ kbd {
 }
 
 .query-mode-btn-redesigned.active {
-    background: rgba(255, 253, 208, 0.1);
+    background: rgba(39, 39, 42, 0.8);
     border-color: var(--accent-primary);
-    box-shadow: 0 0 20px rgba(255, 253, 208, 0.15);
+    box-shadow: 0 0 20px rgba(39, 39, 42, 0.9);
 }
 
 .query-mode-icon {
@@ -6019,7 +5998,7 @@ kbd {
 .compare-input-wrapper:focus-within {
     border-color: var(--accent-primary);
     background: rgba(255, 255, 255, 0.05);
-    box-shadow: 0 0 0 3px rgba(255, 253, 208, 0.1);
+    box-shadow: 0 0 0 3px rgba(39, 39, 42, 0.8);
 }
 
 .compare-prompt-input {
@@ -6092,7 +6071,7 @@ kbd {
 
 .btn-send-compare:hover:not(:disabled) {
     background: white;
-    box-shadow: 0 4px 12px rgba(255, 253, 208, 0.3);
+    box-shadow: 0 4px 12px rgba(6, 182, 212, 0.2);
     transform: translateY(-2px);
 }
 
