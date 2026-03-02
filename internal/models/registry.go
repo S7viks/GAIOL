@@ -3,6 +3,7 @@ package models
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -41,8 +42,12 @@ func NewRegistry(openRouterAdapter, hfAdapter, ollamaAdapter ModelAdapter) *Regi
 		r.registerOllamaModels(ollamaAdapter)
 	}
 
-	r.registerHuggingFaceModels(hfAdapter)
-	r.registerOpenRouterModels(openRouterAdapter)
+	if hfAdapter != nil {
+		r.registerHuggingFaceModels(hfAdapter)
+	}
+	if openRouterAdapter != nil {
+		r.registerOpenRouterModels(openRouterAdapter)
+	}
 
 	return r
 }
@@ -381,6 +386,34 @@ func (r *Registry) ListModels() []ModelMetadata {
 		models = append(models, m)
 	}
 	return models
+}
+
+// RegisterModel adds or replaces a model in the registry.
+// This is used for tenant-configured models (bring-your-own providers/models).
+func (r *Registry) RegisterModel(m ModelMetadata) error {
+	if strings.TrimSpace(string(m.ID)) == "" {
+		return fmt.Errorf("model id is required")
+	}
+	if strings.TrimSpace(m.Provider) == "" {
+		return fmt.Errorf("model provider is required")
+	}
+	if strings.TrimSpace(m.ModelName) == "" {
+		return fmt.Errorf("model name is required")
+	}
+	if m.Adapter == nil {
+		return fmt.Errorf("model adapter is required")
+	}
+	if strings.TrimSpace(m.DisplayName) == "" {
+		m.DisplayName = m.ModelName
+	}
+	if len(m.Capabilities) == 0 {
+		m.Capabilities = []TaskType{TaskGenerate}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.models[m.ID] = m
+	return nil
 }
 
 // FindModelsByTask returns models that support a specific task

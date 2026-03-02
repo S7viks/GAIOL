@@ -265,6 +265,9 @@ func registerRoutes() {
 	if dbAvailable && authAPI != nil {
 		reqAuth := auth.AuthMiddleware(dbClient)
 		http.Handle("/api/settings/provider-keys", reqAuth(cors(handleProviderKeys)))
+		// Universal providers/models (tenant-configurable)
+		http.Handle("/api/settings/providers", reqAuth(cors(handleCustomProviders)))
+		http.Handle("/api/settings/models", reqAuth(cors(handleTenantModelsSettings)))
 		http.Handle("/api/gaiol-keys", reqAuth(cors(handleGAIOLKeys)))
 		http.Handle("/api/gaiol-keys/", reqAuth(cors(handleGAIOLKeysID)))
 		// 10. Usage and billing (Phase 6)
@@ -604,6 +607,134 @@ func buildRegistryFromKeys(providerKeys map[string]string, tracker *models.Perfo
 	return reg, models.NewModelRouter(reg, tracker)
 }
 
+// buildTenantRegistry builds a registry/router for a tenant from:
+// - legacy provider keys (provider_api_keys): openrouter, huggingface, google
+// - custom providers (tenant_providers): openai-compatible endpoints
+// - tenant models (tenant_models): explicit model ids for routing
+func buildTenantRegistry(ctx context.Context, db *database.Client, tenantID string, tracker *models.PerformanceTracker) (*models.Registry, *models.ModelRouter, error) {
+	if db == nil || db.Client == nil || strings.TrimSpace(tenantID) == "" {
+		return nil, nil, fmt.Errorf("database + tenant_id are required")
+	}
+
+	legacyKeys, err := keys.LoadProviderKeysForTenant(ctx, db, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var openRouterAdapter models.ModelAdapter
+	var hfAdapter models.ModelAdapter
+	var geminiAdapter models.ModelAdapter
+
+	if k := legacyKeys["openrouter"]; k != "" {
+		openRouterAdapter = adapters.NewOpenRouterAdapter("", k)
+	}
+	if k := legacyKeys["huggingface"]; k != "" {
+		hfAdapter = adapters.NewHuggingFaceAdapter("", k)
+	}
+
+	reg := models.NewRegistry(openRouterAdapter, hfAdapter, nil)
+	if k := legacyKeys["google"]; k != "" {
+		geminiAdapter = adapters.NewGeminiAdapter(k)
+		reg.AddGeminiModels(geminiAdapter)
+	}
+
+	adapterByProvider := map[string]models.ModelAdapter{}
+	if openRouterAdapter != nil {
+		adapterByProvider["openrouter"] = openRouterAdapter
+	}
+	if hfAdapter != nil {
+		adapterByProvider["huggingface"] = hfAdapter
+	}
+	if geminiAdapter != nil {
+		adapterByProvider["google"] = geminiAdapter
+		adapterByProvider["gemini"] = geminiAdapter
+	}
+
+	customProviders, err := keys.LoadCustomProvidersForTenant(ctx, db, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+	for pk, cfg := range customProviders {
+		switch strings.TrimSpace(strings.ToLower(cfg.ProviderType)) {
+		case "", "openai_compatible":
+			adapterByProvider[pk] = adapters.NewOpenAICompatibleAdapter(pk, cfg.BaseURL, cfg.AuthHeader, cfg.AuthScheme, cfg.APIKey)
+		case "anthropic_messages":
+			adapterByProvider[pk] = adapters.NewAnthropicAdapter(pk, cfg.BaseURL, cfg.APIKey)
+		default:
+			continue
+		}
+	}
+
+	tenantModels, err := keys.LoadTenantModelsForTenant(ctx, db, tenantID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// If no tenant_models rows exist, attempt to register default_model_id (if set) so
+	// a tenant can be functional with minimal config.
+	if len(tenantModels) == 0 {
+		if s, _ := db.GetTenantSettings(ctx, tenantID); s != nil && strings.TrimSpace(s.DefaultModelID) != "" {
+			parts := strings.SplitN(strings.TrimSpace(s.DefaultModelID), ":", 2)
+			if len(parts) == 2 {
+				tenantModels = append(tenantModels, keys.TenantModelRow{
+					ProviderKey: parts[0],
+					ModelID:     parts[1],
+					DisplayName: "",
+					QualityScore: 0.75,
+					CostPerToken: 0.0,
+					ContextWindow: 0,
+					MaxTokens: 0,
+					Tags: []string{"default"},
+					IsActive: true,
+				})
+			}
+		}
+	}
+
+	for _, m := range tenantModels {
+		pk := strings.TrimSpace(strings.ToLower(m.ProviderKey))
+		if pk == "" || strings.TrimSpace(m.ModelID) == "" || !m.IsActive {
+			continue
+		}
+
+		adapter := adapterByProvider[pk]
+		if adapter == nil {
+			continue
+		}
+
+		regProvider := pk
+		idPrefix := pk
+		if pk == "google" || pk == "gemini" {
+			regProvider = "gemini"
+			idPrefix = "gemini"
+		}
+
+		id := models.ModelID(idPrefix + ":" + m.ModelID)
+		display := strings.TrimSpace(m.DisplayName)
+		if display == "" {
+			display = m.ModelID
+		}
+		_ = reg.RegisterModel(models.ModelMetadata{
+			ID:            id,
+			Provider:      regProvider,
+			ModelName:     m.ModelID,
+			DisplayName:   display,
+			CostInfo:      models.CostInfo{CostPerToken: m.CostPerToken},
+			Capabilities:  []models.TaskType{models.TaskGenerate, models.TaskAnalyze, models.TaskSummarize, models.TaskTransform, models.TaskCode},
+			QualityScore:  m.QualityScore,
+			ContextWindow: m.ContextWindow,
+			MaxTokens:     m.MaxTokens,
+			Tags:          m.Tags,
+			Adapter:       adapter,
+		})
+	}
+
+	if reg.Count() == 0 {
+		return nil, nil, nil
+	}
+	return reg, models.NewModelRouter(reg, tracker), nil
+}
+
 // ============================================================================
 // Query Handlers
 // ============================================================================
@@ -751,20 +882,19 @@ func handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 	var engine *reasoning.ReasoningEngine
 	if dbAvailable && dbClient != nil {
 		tenantCtx, _ = database.GetTenantFromContext(r.Context())
-		providerKeys, loadErr := keys.LoadProviderKeysForTenant(r.Context(), dbClient, tenantCtx.TenantID)
-		if loadErr != nil {
-			log.Printf("❌ Load provider keys: %v", loadErr)
+		tenantReg, tenantRouter, buildErr := buildTenantRegistry(r.Context(), dbClient, tenantCtx.TenantID, tracker)
+		if buildErr != nil {
+			log.Printf("❌ Build tenant registry: %v", buildErr)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Failed to load provider keys", "success": false})
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": "Failed to load tenant models/providers", "success": false})
 			return
 		}
-		tenantReg, tenantRouter := buildRegistryFromKeys(providerKeys, tracker)
 		if tenantReg == nil || tenantRouter == nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
 			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":   "Add provider API keys in Dashboard Settings (OpenRouter, Google, or HuggingFace) to use the reasoning engine.",
+				"error":   "No tenant models/providers configured. Add built-in provider keys in Dashboard > Models, or register custom providers/models via /api/settings/providers and /api/settings/models.",
 				"success": false,
 			})
 			return
@@ -938,6 +1068,134 @@ func handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_removed", map[string]interface{}{"provider": provider})
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+// Universal provider endpoints (tenant-configurable).
+// Provider keys are stored encrypted in tenant_providers; models are registered in tenant_models.
+func handleCustomProviders(w http.ResponseWriter, r *http.Request) {
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		list, err := keys.ListCustomProviders(r.Context(), dbClient, tenantCtx.TenantID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"providers": list})
+	case http.MethodPost:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage providers", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ProviderKey  string `json:"provider_key"`
+			ProviderType string `json:"provider_type"`
+			BaseURL      string `json:"base_url"`
+			APIKey       string `json:"api_key"`
+			AuthHeader   string `json:"auth_header"`
+			AuthScheme   string `json:"auth_scheme"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		hint, err := keys.StoreCustomProvider(r.Context(), dbClient, tenantCtx.TenantID, body.ProviderKey, body.ProviderType, body.BaseURL, body.APIKey, body.AuthHeader, body.AuthScheme)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "custom_provider_saved", map[string]interface{}{"provider_key": body.ProviderKey})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]string{"key_hint": hint})
+	case http.MethodDelete:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage providers", http.StatusForbidden)
+			return
+		}
+		providerKey := r.URL.Query().Get("provider_key")
+		if providerKey == "" {
+			http.Error(w, "provider_key query required", http.StatusBadRequest)
+			return
+		}
+		if err := keys.DeleteCustomProvider(r.Context(), dbClient, tenantCtx.TenantID, providerKey); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "custom_provider_deleted", map[string]interface{}{"provider_key": providerKey})
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleTenantModelsSettings(w http.ResponseWriter, r *http.Request) {
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		list, err := keys.ListTenantModels(r.Context(), dbClient, tenantCtx.TenantID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"models": list})
+	case http.MethodPost:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage models", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ProviderKey   string    `json:"provider_key"`
+			ModelID       string    `json:"model_id"`
+			DisplayName   string    `json:"display_name"`
+			QualityScore  *float64  `json:"quality_score"`
+			CostPerToken  *float64  `json:"cost_per_token"`
+			ContextWindow *int      `json:"context_window"`
+			MaxTokens     *int      `json:"max_tokens"`
+			Tags          []string  `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if err := keys.UpsertTenantModel(r.Context(), dbClient, tenantCtx.TenantID, body.ProviderKey, body.ModelID, body.DisplayName, body.QualityScore, body.CostPerToken, body.ContextWindow, body.MaxTokens, body.Tags); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "tenant_model_saved", map[string]interface{}{"provider_key": body.ProviderKey, "model_id": body.ModelID})
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]bool{"success": true})
+	case http.MethodDelete:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage models", http.StatusForbidden)
+			return
+		}
+		providerKey := r.URL.Query().Get("provider_key")
+		modelID := r.URL.Query().Get("model_id")
+		if providerKey == "" || modelID == "" {
+			http.Error(w, "provider_key and model_id queries required", http.StatusBadRequest)
+			return
+		}
+		if err := keys.DeleteTenantModel(r.Context(), dbClient, tenantCtx.TenantID, providerKey, modelID); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "tenant_model_deleted", map[string]interface{}{"provider_key": providerKey, "model_id": modelID})
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1273,12 +1531,11 @@ func handleTenantModels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	providerKeys, loadErr := keys.LoadProviderKeysForTenant(r.Context(), dbClient, tenantCtx.TenantID)
-	if loadErr != nil {
-		http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+	tenantReg, _, buildErr := buildTenantRegistry(r.Context(), dbClient, tenantCtx.TenantID, tracker)
+	if buildErr != nil {
+		http.Error(w, buildErr.Error(), http.StatusInternalServerError)
 		return
 	}
-	tenantReg, _ := buildRegistryFromKeys(providerKeys, tracker)
 	if tenantReg == nil {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"models": []interface{}{}, "count": 0})
@@ -1375,19 +1632,11 @@ func handleV1Chat(w http.ResponseWriter, r *http.Request) {
 	rateLimitMu.Unlock()
 
 	v1Start := time.Now()
-	providerKeys, loadErr := keys.LoadProviderKeysForTenant(r.Context(), dbClient, tenantID)
-	if loadErr != nil {
-		http.Error(w, "Failed to load provider keys", http.StatusInternalServerError)
-		return
-	}
-	tenantReg, tenantRouter := buildRegistryFromKeys(providerKeys, tracker)
-	if tenantReg == nil || tenantRouter == nil {
-		http.Error(w, "No provider keys configured for this tenant", http.StatusBadRequest)
-		return
-	}
-	engine := reasoning.NewReasoningEngine(tenantRouter)
 	var body struct {
 		Prompt      string  `json:"prompt"`
+		ProviderKey string  `json:"provider_key"`
+		ModelID     string  `json:"model_id"`
+		Model       string  `json:"model"`
 		Strategy    string  `json:"strategy"`
 		Task        string  `json:"task"`
 		MaxTokens   int     `json:"max_tokens"`
@@ -1401,6 +1650,69 @@ func handleV1Chat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
+
+	tenantReg, tenantRouter, buildErr := buildTenantRegistry(r.Context(), dbClient, tenantID, tracker)
+	if buildErr != nil {
+		http.Error(w, "Failed to load tenant models/providers", http.StatusInternalServerError)
+		return
+	}
+	if tenantReg == nil || tenantRouter == nil {
+		http.Error(w, "No tenant models/providers configured for this tenant. Add built-in provider keys (Dashboard > Models) or register custom providers/models via /api/settings/providers and /api/settings/models.", http.StatusBadRequest)
+		return
+	}
+
+	requestedModel := strings.TrimSpace(body.ModelID)
+	if requestedModel == "" {
+		requestedModel = strings.TrimSpace(body.Model)
+	}
+	if requestedModel != "" && !strings.Contains(requestedModel, ":") && strings.TrimSpace(body.ProviderKey) != "" {
+		requestedModel = strings.TrimSpace(strings.ToLower(body.ProviderKey)) + ":" + requestedModel
+	}
+
+	// If a specific model is requested, run a direct single-model call (no reasoning engine).
+	if requestedModel != "" {
+		meta, err := tenantReg.GetModel(models.ModelID(requestedModel))
+		if err != nil {
+			http.Error(w, "Model not registered for this tenant. Add it in Settings > Models.", http.StatusBadRequest)
+			return
+		}
+		uaipReq := &uaip.UAIPRequest{
+			UAIP: uaip.UAIPHeader{
+				Version:   uaip.ProtocolVersion,
+				MessageID: fmt.Sprintf("v1-%d", time.Now().UnixNano()),
+				Timestamp: time.Now(),
+			},
+			Payload: uaip.Payload{
+				Input: uaip.PayloadInput{Data: body.Prompt, Format: "text"},
+				OutputRequirements: uaip.OutputRequirements{
+					MaxTokens:   body.MaxTokens,
+					Temperature: body.Temperature,
+				},
+			},
+		}
+		resp, err := meta.Adapter.GenerateText(r.Context(), meta.ModelName, uaipReq)
+		if err != nil {
+			log.Printf("v1/chat tenant_id=%s model=%s latency_ms=%d success=false error=%s", tenantID, requestedModel, time.Since(v1Start).Milliseconds(), err.Error())
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error(), "success": false})
+			return
+		}
+		tenantCtx := database.TenantContext{TenantID: tenantID, UserID: "", OrgID: ""}
+		_ = logUsageToAPIQueries(dbClient, tenantCtx, requestedModel, resp.Result.TokensUsed, 0.0, resp.Result.ProcessingMs, true, "", gaiolKeyID)
+		log.Printf("v1/chat tenant_id=%s model=%s latency_ms=%d success=true", tenantID, requestedModel, time.Since(v1Start).Milliseconds())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":     resp.Result.Data,
+			"cost":       0.0,
+			"session_id": "",
+			"model_id":   requestedModel,
+		})
+		return
+	}
+
+	engine := reasoning.NewReasoningEngine(tenantRouter)
 	if body.Strategy == "" {
 		if prefs, _ := dbClient.GetTenantSettings(r.Context(), tenantID); prefs != nil && prefs.Strategy != "" {
 			body.Strategy = prefs.Strategy
