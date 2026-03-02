@@ -3291,6 +3291,16 @@ body::before {
         top: var(--top-bar-height);
         bottom: 0;
         z-index: 99;
+        width: var(--sidebar-width);
+        min-width: var(--sidebar-width);
+    }
+
+    .app-container {
+        padding-left: var(--sidebar-width);
+    }
+
+    .app-container:has(.left-sidebar.collapsed) {
+        padding-left: 0;
     }
 }
 
