@@ -17,6 +17,9 @@ coverage.out
 # Dependency directories
 vendor/
 
+# Nested repo (removed submodule; single codebase at root)
+GAIOL/
+
 # Go workspace file
 go.work
 
