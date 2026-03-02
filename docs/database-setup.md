@@ -1,6 +1,6 @@
 # Supabase Database Setup Guide
 
-This guide explains how to set up Supabase database connection with multitenancy and authentication for GAIOL.
+This guide explains how to set up Supabase database connection with multitenancy and authentication for GAIOL. For migration run order (including optional migrations), see [migrations/README.md](../migrations/README.md).
 
 ## Prerequisites
 

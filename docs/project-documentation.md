@@ -811,29 +811,11 @@ GAIOL/
 - **Purpose**: Stop the server (PowerShell)
 - **Description**: Stops running server instances
 
-#### `clean-start.ps1`
-- **Purpose**: Clean build and start
-- **Description**: Cleans build artifacts and starts fresh
+Scripts have been moved under `scripts/`. See [scripts/README.md](../scripts/README.md) for the full list.
 
-#### `QUICK-TEST.ps1`
-- **Purpose**: Quick test script
-- **Description**: Runs quick tests
-
-#### `FINAL-TEST.ps1`
-- **Purpose**: Final test suite
-- **Description**: Runs comprehensive tests
-
-#### `TEST-OLLAMA.ps1`
-- **Purpose**: Test Ollama integration
-- **Description**: Tests local Ollama adapter
-
-#### `RAW-TEST.ps1`
-- **Purpose**: Raw test execution
-- **Description**: Runs tests without formatting
-
-#### `test-pipeline.ps1`
-- **Purpose**: Test pipeline script
-- **Description**: Runs full test pipeline
+- **Start/stop** (repo root): `start.ps1`, `stop.ps1`, `start.bat`, `stop.bat`
+- **Dev:** `scripts/dev/clean-start.ps1` — clean build and start
+- **Test:** `scripts/test/integration.ps1`, `scripts/test/quick.ps1`, `scripts/test/final.ps1`, `scripts/test/ollama.ps1`, `scripts/test/raw.ps1`, `scripts/test/pipeline.ps1`
 
 ---
 

@@ -42,14 +42,15 @@ func (c *Client) GetTenantInfo(ctx context.Context, userID string) (*TenantConte
 		}
 	}
 
-	// Fallback: query user_profiles directly
+	// Fallback: query user_profiles directly (include role for key-management checks)
 	var rows []struct {
 		ID             string  `json:"id"`
 		TenantID       *string `json:"tenant_id"`
 		OrganizationID *string `json:"organization_id"`
+		Role           *string `json:"role"`
 	}
 	_, err := c.From("user_profiles").
-		Select("id,tenant_id,organization_id", "", false).
+		Select("id,tenant_id,organization_id,role", "", false).
 		Filter("id", "eq", userID).
 		ExecuteTo(&rows)
 	if err != nil {
@@ -61,6 +62,9 @@ func (c *Client) GetTenantInfo(ctx context.Context, userID string) (*TenantConte
 	}
 
 	tc := &TenantContext{UserID: rows[0].ID, OrgID: ""}
+	if rows[0].Role != nil {
+		tc.Role = *rows[0].Role
+	}
 	if rows[0].TenantID != nil && *rows[0].TenantID != "" {
 		tc.TenantID = *rows[0].TenantID
 	} else {

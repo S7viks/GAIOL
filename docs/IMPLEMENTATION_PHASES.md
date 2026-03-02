@@ -257,13 +257,26 @@ This document breaks the [GAIOL Public Product Plan](GAIOL_PUBLIC_PRODUCT_PLAN.m
 
 # Checklist (all phases)
 
-- [ ] **0:** Redact docs; LICENSE; .env.example (app no provider keys); README  
-- [ ] **1:** Landing at `/`; CTA; dashboard placeholder  
-- [ ] **2:** Signup; login; logout; session; protected routes  
-- [ ] **3:** GetTenantInfo from DB; tenant in context; 007 migration; RLS  
-- [ ] **4:** Provider key APIs; GAIOL key APIs; inference with GAIOL key only; usage logging; no provider keys in app env  
-- [ ] **5:** Dashboard shell; home; Models page (provider keys); API keys page; Settings  
-- [ ] **6:** Usage API + page (summary, graph, breakdown, export); Billing API + page (summary, history)  
-- [ ] **7:** GET /api/models; models list; health; rate limit; logging; API docs; quickstart; optional activity  
+- [x] **0:** Redact docs; LICENSE; .env.example (app no provider keys); README  
+- [x] **1:** Landing at `/`; CTA; dashboard placeholder  
+- [x] **2:** Signup; login; logout; session; protected routes  
+- [x] **3:** GetTenantInfo from DB; tenant in context; 007 migration; RLS  
+- [x] **4:** Provider key APIs; GAIOL key APIs; inference with GAIOL key only; usage logging; no provider keys in app env  
+- [x] **5:** Dashboard shell; home; Models page (provider keys); API keys page; Settings  
+- [x] **6:** Usage API + page (summary, graph, breakdown, export); Billing API + page (summary, history)  
+- [x] **7:** GET /api/tenant/models; models list on Models page; health; rate limit (60/min per key); API docs; quickstart  
+
+---
+
+# Optional features (implemented)
+
+- **Password reset:** "Forgot password?" on login; `POST /api/auth/recover`, `POST /api/auth/update-password`; `/reset-password` page for setting new password from email link.
+- **Audit / activity log:** `audit_log` table (migration 008); writes on provider key add/remove, GAIOL key create/revoke; `GET /api/activity`; Dashboard > Activity.
+- **Usage time-series chart:** Chart.js on Usage page (cost and requests by day).
+- **Per-GAIOL-key usage:** `api_queries.gaiol_api_key_id` (migration 008); v1/chat logs key id; Usage API and page show "By API key".
+- **Budget alerts:** Tenant settings (budget limit); in-app banner on Dashboard home when usage exceeds budget; Settings > Preferences.
+- **Model preferences:** `tenant_settings` (default_model_id, strategy); `GET/PUT /api/settings/preferences`; Settings page; v1/chat uses tenant strategy when not overridden.
+- **Teams / orgs (roles):** `user_profiles.role`; only admin/owner can create/revoke GAIOL keys and manage provider keys; members can view and use keys.
+- **Runbook / ops doc:** [RUNBOOK.md](RUNBOOK.md) — deploy, env vars, migrations, revoke key, disable tenant, health, logs, backups.
 
 This phased plan breaks the full implementation into smaller, ordered steps with full context and clear "Done when" criteria. Use it alongside [GAIOL_PUBLIC_PRODUCT_PLAN.md](GAIOL_PUBLIC_PRODUCT_PLAN.md) for detailed tables and product pages (Part G).

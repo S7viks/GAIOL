@@ -8,6 +8,7 @@ Complete API reference for the GAIOL platform.
 
 - [Base URL](#base-url)
 - [Authentication](#authentication)
+- [Unified Inference (POST /v1/chat)](#unified-inference-post-v1chat)
 - [Model Discovery](#model-discovery)
 - [Query Endpoints](#query-endpoints)
 - [Reasoning Engine](#reasoning-engine)
@@ -38,6 +39,52 @@ Most endpoints support optional authentication. When authentication is enabled:
 - Use `/api/auth/refresh` to get new tokens
 
 **Note**: Authentication is optional. The system works without a database, but some features require authentication.
+
+### Unified Inference API (GAIOL key)
+
+For programmatic access without a browser session, use a **GAIOL API key** (created in Dashboard > API keys):
+
+- **Header:** `Authorization: Bearer <your_gaiol_key>`
+- **Endpoint:** `POST /v1/chat` (see [Unified Inference](#unified-inference-post-v1chat) below)
+- **Rate limit:** 60 requests per minute per key. Response `429 Too Many Requests` with `Retry-After: 60` when exceeded.
+
+---
+
+## Unified Inference (POST /v1/chat)
+
+Single endpoint for inference using your **GAIOL API key** (no JWT). Add provider keys in the dashboard first; then create a GAIOL key and use it here.
+
+**Request:**
+```http
+POST /v1/chat
+Authorization: Bearer <gaiol_api_key>
+Content-Type: application/json
+```
+```json
+{
+  "prompt": "Your question or task",
+  "strategy": "balanced",
+  "task": "generate",
+  "max_tokens": 500,
+  "temperature": 0.7
+}
+```
+
+**Response (200):**
+```json
+{
+  "result": "Model output text...",
+  "cost": 0.0012,
+  "session_id": "uuid"
+}
+```
+
+**Errors:**
+- `401` — Missing or invalid API key
+- `400` — No provider keys configured for this tenant; add keys in Dashboard > Models
+- `429` — Rate limit exceeded (60 requests/minute per key); retry after `Retry-After` seconds
+
+**Quickstart:** Sign up → Dashboard > Models (add OpenRouter/Google/HuggingFace key) → Dashboard > API keys (create key, copy once) → `curl -X POST http://localhost:8080/v1/chat -H "Authorization: Bearer YOUR_KEY" -H "Content-Type: application/json" -d '{"prompt":"Hello"}'`
 
 ---
 

@@ -320,6 +320,88 @@ func (a *AuthAPI) GetUser(ctx context.Context, accessToken string) (*UserInfo, e
 	return &user, nil
 }
 
+// RecoverPassword sends a password recovery email via Supabase Auth.
+// redirectTo should be the app URL where the user lands after clicking the email link (e.g. https://yourapp.com/reset-password).
+func (a *AuthAPI) RecoverPassword(ctx context.Context, email string, redirectTo string) error {
+	url := fmt.Sprintf("%s/auth/v1/recover", a.SupabaseURL)
+	payload := map[string]string{"email": email}
+	if redirectTo != "" {
+		payload["redirect_to"] = redirectTo
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("apikey", a.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+a.APIKey)
+	resp, err := a.HTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		var errResp struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+		}
+		json.Unmarshal(respBody, &errResp)
+		msg := errResp.Message
+		if msg == "" {
+			msg = errResp.Error
+		}
+		if msg == "" {
+			msg = string(respBody)
+		}
+		return fmt.Errorf("recover failed: %s", msg)
+	}
+	return nil
+}
+
+// UpdatePassword updates the user's password using a valid access token (e.g. from recovery link).
+func (a *AuthAPI) UpdatePassword(ctx context.Context, accessToken string, newPassword string) error {
+	url := fmt.Sprintf("%s/auth/v1/user", a.SupabaseURL)
+	payload := map[string]string{"password": newPassword}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewBuffer(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("apikey", a.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := a.HTTPClient.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Message string `json:"message"`
+			Error   string `json:"error"`
+		}
+		json.Unmarshal(respBody, &errResp)
+		msg := errResp.Message
+		if msg == "" {
+			msg = errResp.Error
+		}
+		if msg == "" {
+			msg = string(respBody)
+		}
+		return fmt.Errorf("update password failed: %s", msg)
+	}
+	return nil
+}
+
 // SignOut signs out a user (invalidates the session)
 func (a *AuthAPI) SignOut(ctx context.Context, accessToken string) error {
 	url := fmt.Sprintf("%s/auth/v1/logout", a.SupabaseURL)

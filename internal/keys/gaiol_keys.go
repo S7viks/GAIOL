@@ -100,14 +100,14 @@ func RevokeGAIOLKey(ctx context.Context, db *database.Client, tenantID string, k
 	return nil
 }
 
-// ValidateGAIOLKey hashes the bearer token, looks up in gaiol_api_keys, returns tenant_id and updates last_used_at.
+// ValidateGAIOLKey hashes the bearer token, looks up in gaiol_api_keys, returns tenant_id, key_id and updates last_used_at.
 // Returns empty tenantID and error if not found or invalid.
-func ValidateGAIOLKey(ctx context.Context, db *database.Client, rawToken string) (tenantID string, err error) {
+func ValidateGAIOLKey(ctx context.Context, db *database.Client, rawToken string) (tenantID, keyID string, err error) {
 	if db == nil || db.Client == nil {
-		return "", errors.New("database client is required")
+		return "", "", errors.New("database client is required")
 	}
 	if rawToken == "" {
-		return "", errors.New("token is required")
+		return "", "", errors.New("token is required")
 	}
 	hash := sha256.Sum256([]byte(rawToken))
 	keyHash := hex.EncodeToString(hash[:])
@@ -121,10 +121,10 @@ func ValidateGAIOLKey(ctx context.Context, db *database.Client, rawToken string)
 		Filter("key_hash", "eq", keyHash).
 		ExecuteTo(&rows)
 	if err != nil || len(rows) == 0 {
-		return "", errors.New("invalid or expired key")
+		return "", "", errors.New("invalid or expired key")
 	}
 	tenantID = rows[0].TenantID
-	keyID := rows[0].ID
+	keyID = rows[0].ID
 
 	// Update last_used_at (best-effort)
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -133,5 +133,5 @@ func ValidateGAIOLKey(ctx context.Context, db *database.Client, rawToken string)
 		Filter("id", "eq", keyID).
 		Execute()
 
-	return tenantID, nil
+	return tenantID, keyID, nil
 }

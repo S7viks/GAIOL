@@ -22,3 +22,4 @@ deps:
 clean:
 	$(GOCMD) clean
 	rm -f web-server.exe
+	rm -f build_error.txt test_results.txt TEST_LOG.txt test_errors.txt

@@ -7,7 +7,7 @@ Get up and running with GAIOL in 5 minutes.
 ## Prerequisites
 
 - **Go 1.21+** installed ([Download](https://golang.org/dl/))
-- **OpenRouter API Key** ([Get one here](https://openrouter.ai/))
+- **Supabase project** (for auth and database) — see [docs/database-setup.md](docs/database-setup.md)
 - **Terminal/Command Prompt**
 
 ---
@@ -27,28 +27,18 @@ go mod download
 
 ## Step 2: Configure Environment
 
-Create a `.env` file in the project root:
-
-```bash
-# Windows (PowerShell)
-New-Item -Path .env -ItemType File
-
-# Linux/Mac
-touch .env
-```
-
-Add your API key:
+Create a `.env` file in the project root (copy from `.env.example`):
 
 ```env
-OPENROUTER_API_KEY=your-key-here
+# Required: Supabase (from Dashboard > Settings > API)
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=your-anon-key
+
+# Required for storing provider keys: generate with: openssl rand -hex 32
+GAIOL_ENCRYPTION_KEY=your-32-byte-hex-key
 ```
 
-**Get your OpenRouter API key:**
-1. Go to [openrouter.ai](https://openrouter.ai/)
-2. Sign up or log in
-3. Navigate to Keys section
-4. Create a new key
-5. Copy and paste into `.env`
+Run the database migrations (see [docs/database-setup.md](docs/database-setup.md)) so auth and key tables exist.
 
 ---
 
@@ -69,18 +59,31 @@ make run
 - **Linux/Mac**: `./start.sh`
 - **PowerShell**: `.\start.ps1`
 
-You should see:
-```
-✅ OpenRouter adapter initialized
-📋 Registry initialized with 150 models
-✅ Model router initialized
-✅ Reasoning API initialized
-🚀 GAIOL Web Server starting on http://localhost:8080
-```
+You should see the server starting on http://localhost:8080.
 
 ---
 
-## Step 4: Open the Web Interface
+## Step 4: Use the app (GAIOL key flow)
+
+1. **Sign up** — Open http://localhost:8080/signup and create an account.
+2. **Add provider keys** — Go to Dashboard > Models. Add at least one provider key (OpenRouter, Google, or HuggingFace). Keys are stored encrypted; the app never uses provider keys from the server environment.
+3. **Create a GAIOL key** — Go to Dashboard > API keys. Click "Create key", copy the key once (it is not shown again).
+4. **Call the inference API** — Use your GAIOL key with `POST /v1/chat`:
+
+```bash
+curl -X POST http://localhost:8080/v1/chat \
+  -H "Authorization: Bearer YOUR_GAIOL_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt":"Hello, say hi in one sentence."}'
+```
+
+See [API.md](API.md) for the full Unified Inference (POST /v1/chat) reference and rate limits (60 req/min per key).
+
+**Note:** Provider keys in `.env` (OPENROUTER_API_KEY, etc.) are for CLI/benchmark only; the app server does not use them for tenant requests.
+
+---
+
+## Step 5: Open the Web Interface
 
 Open your browser and navigate to:
 
@@ -92,7 +95,7 @@ You should see the GAIOL chat interface!
 
 ---
 
-## Step 5: Test It Out
+## Step 6: Test It Out
 
 ### Try a Simple Query
 
@@ -131,7 +134,7 @@ You should see the GAIOL chat interface!
    SUPABASE_URL=https://your-project.supabase.co
    SUPABASE_ANON_KEY=your-anon-key
    ```
-3. Run migrations (see [DATABASE_SETUP.md](DATABASE_SETUP.md))
+3. Run migrations (see [docs/database-setup.md](docs/database-setup.md))
 4. Restart the server
 
 ### Configure Reasoning Engine

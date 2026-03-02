@@ -65,7 +65,16 @@
                             <input type="checkbox" id="rememberMe">
                             <span>Remember me</span>
                         </label>
-                        <a href="#" class="link-text" onclick="showForgotPassword()">Forgot password?</a>
+                        <a href="#" class="link-text" id="forgotPasswordLink">Forgot password?</a>
+                    </div>
+                    <div id="forgotPasswordForm" class="form-group" style="display: none; margin-top: 1rem; padding: 1rem; background: var(--surface, #1a1a1f); border-radius: 8px;">
+                        <label for="forgotEmail">Enter your email to receive a reset link</label>
+                        <input type="email" id="forgotEmail" placeholder="your@email.com" style="margin-top: 0.5rem;">
+                        <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem;">
+                            <button type="button" class="btn-primary" id="forgotSubmitBtn">Send reset link</button>
+                            <button type="button" class="btn-secondary" id="forgotCancelBtn">Cancel</button>
+                        </div>
+                        <p id="forgotMessage" style="margin-top: 0.5rem; font-size: 0.9rem; color: var(--muted, #888); display: none;"></p>
                     </div>
                     <button type="submit" class="btn-primary btn-full" id="loginBtn">
                         <span id="loginBtnText">Sign In</span>

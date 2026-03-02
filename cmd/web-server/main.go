@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,16 +27,20 @@ import (
 )
 
 var (
-	registry     *models.Registry
-	router       *models.ModelRouter
-	tracker      *models.PerformanceTracker
-	dbClient     *database.Client
-	dbAvailable  bool
-	authAPI      *auth.AuthAPI
-	reasoningAPI *reasoning.ReasoningAPI
-	worldModel   *reasoning.WorldModel
-	metrics      *monitoring.MetricsService
+	registry       *models.Registry
+	router         *models.ModelRouter
+	tracker        *models.PerformanceTracker
+	dbClient       *database.Client
+	dbAvailable    bool
+	authAPI        *auth.AuthAPI
+	reasoningAPI   *reasoning.ReasoningAPI
+	worldModel     *reasoning.WorldModel
+	metrics        *monitoring.MetricsService
+	rateLimitMu    sync.Mutex
+	rateLimitCount map[string][]time.Time // key (tenantID) -> timestamps in last minute
 )
+
+const rateLimitPerMin = 60
 
 func main() {
 	// Load environment variables
@@ -175,7 +181,9 @@ func registerRoutes() {
 	// Auth and app pages (exact paths so they take precedence over file server)
 	http.HandleFunc("/login", serveStaticPage("login.html"))
 	http.HandleFunc("/signup", serveStaticPage("signup.html"))
-	http.HandleFunc("/dashboard", serveStaticPage("dashboard.html"))
+	http.HandleFunc("/reset-password", serveStaticPage("reset-password.html"))
+	http.HandleFunc("/dashboard", serveDashboard)
+	http.HandleFunc("/dashboard/", serveDashboard)
 	http.HandleFunc("/", noCacheFileServer)
 
 	// 2. Model Routes (public, specific first)
@@ -191,6 +199,8 @@ func registerRoutes() {
 	http.Handle("/api/auth/session", optionalAuthMiddleware(authMiddleware, cors(handleGetSession)))
 	http.Handle("/api/auth/refresh", optionalAuthMiddleware(authMiddleware, cors(handleRefreshToken)))
 	http.Handle("/api/auth/user", optionalAuthMiddleware(authMiddleware, cors(handleGetUser)))
+	http.HandleFunc("/api/auth/recover", cors(handleRecoverPassword))
+	http.HandleFunc("/api/auth/update-password", cors(handleUpdatePassword))
 
 	// 4. Query Routes (protected when DB available; require auth for Phase 2)
 	if dbAvailable && authAPI != nil {
@@ -251,6 +261,17 @@ func registerRoutes() {
 		http.Handle("/api/settings/provider-keys", reqAuth(cors(handleProviderKeys)))
 		http.Handle("/api/gaiol-keys", reqAuth(cors(handleGAIOLKeys)))
 		http.Handle("/api/gaiol-keys/", reqAuth(cors(handleGAIOLKeysID)))
+		// 10. Usage and billing (Phase 6)
+		http.Handle("/api/usage", reqAuth(cors(handleUsage)))
+		http.Handle("/api/usage/export", reqAuth(cors(handleUsageExport)))
+		http.Handle("/api/billing/summary", reqAuth(cors(handleBillingSummary)))
+		http.Handle("/api/billing/history", reqAuth(cors(handleBillingHistory)))
+		// 11. Tenant-scoped models list (Phase 7)
+		http.Handle("/api/tenant/models", reqAuth(cors(handleTenantModels)))
+		// Activity log (Phase 7.8)
+		http.Handle("/api/activity", reqAuth(cors(handleActivity)))
+		// Tenant preferences (budget, default model, strategy)
+		http.Handle("/api/settings/preferences", reqAuth(cors(handlePreferences)))
 	}
 	// 9. Unified inference by GAIOL key only (no JWT)
 	http.Handle("/v1/chat", cors(handleV1Chat))
@@ -313,6 +334,19 @@ func serveStaticPage(filename string) http.HandlerFunc {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		http.ServeContent(w, r, filename, time.Time{}, file)
 	}
+}
+
+// serveDashboard serves dashboard.html for /dashboard and /dashboard/* (SPA-style client routing).
+func serveDashboard(w http.ResponseWriter, r *http.Request) {
+	file, err := os.Open("./web/dashboard.html")
+	if err != nil {
+		http.Error(w, "dashboard not found", http.StatusNotFound)
+		return
+	}
+	defer file.Close()
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "dashboard.html", time.Time{}, file)
 }
 
 // ============================================================================
@@ -452,21 +486,24 @@ func convertModelsToJSON(models []models.ModelMetadata) []map[string]interface{}
 	return result
 }
 
-// logUsageToAPIQueries inserts a row into api_queries for usage/billing. Best-effort; errors are logged only.
-func logUsageToAPIQueries(db *database.Client, tenant database.TenantContext, modelID string, tokensUsed int, cost float64, processingMs int, success bool, errMsg string) error {
+// logUsageToAPIQueries inserts a row into api_queries for usage/billing. gaiolKeyID is optional (set when request used a GAIOL key).
+func logUsageToAPIQueries(db *database.Client, tenant database.TenantContext, modelID string, tokensUsed int, cost float64, processingMs int, success bool, errMsg string, gaiolKeyID string) error {
 	if db == nil || db.Client == nil {
 		return nil
 	}
 	row := map[string]interface{}{
-		"tenant_id":          tenant.TenantID,
-		"organization_id":   tenant.OrgID,
-		"user_id":           tenant.UserID,
-		"model_id":          modelID,
-		"tokens_used":       tokensUsed,
-		"cost":               cost,
+		"tenant_id":           tenant.TenantID,
+		"organization_id":     tenant.OrgID,
+		"user_id":             tenant.UserID,
+		"model_id":            modelID,
+		"tokens_used":         tokensUsed,
+		"cost":                cost,
 		"processing_time_ms": processingMs,
-		"success":           success,
-		"error_message":     errMsg,
+		"success":            success,
+		"error_message":      errMsg,
+	}
+	if gaiolKeyID != "" {
+		row["gaiol_api_key_id"] = gaiolKeyID
 	}
 	_, _, err := db.From("api_queries").Insert(row, false, "", "", "").Execute()
 	if err != nil {
@@ -734,7 +771,7 @@ func handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 		if sm != nil {
 			cost = sm.TotalCost
 		}
-		_ = logUsageToAPIQueries(dbClient, tenantCtx, "reasoning-engine", 0, cost, 0, true, "")
+		_ = logUsageToAPIQueries(dbClient, tenantCtx, "reasoning-engine", 0, cost, 0, true, "", "")
 	}
 
 	// Build response in the same format as before for frontend compatibility
@@ -775,6 +812,11 @@ func handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func canManageKeys(tc database.TenantContext) bool {
+	// Empty role (e.g. from RPC that does not return role) treated as owner for backward compatibility
+	return tc.Role == "admin" || tc.Role == "owner" || tc.Role == ""
+}
+
 func handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 	tenantCtx, err := database.EnsureTenantContext(r.Context())
 	if err != nil || dbClient == nil {
@@ -791,6 +833,10 @@ func handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	case http.MethodPost:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage provider keys", http.StatusForbidden)
+			return
+		}
 		var body struct {
 			Provider string `json:"provider"`
 			APIKey   string `json:"api_key"`
@@ -804,10 +850,15 @@ func handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_added", map[string]interface{}{"provider": body.Provider})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]string{"key_hint": hint})
 	case http.MethodDelete:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can manage provider keys", http.StatusForbidden)
+			return
+		}
 		provider := r.URL.Query().Get("provider")
 		if provider == "" {
 			http.Error(w, "provider query required", http.StatusBadRequest)
@@ -817,6 +868,7 @@ func handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_removed", map[string]interface{}{"provider": provider})
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -839,6 +891,10 @@ func handleGAIOLKeys(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	case http.MethodPost:
+		if !canManageKeys(tenantCtx) {
+			http.Error(w, "Forbidden: only admins can create GAIOL keys", http.StatusForbidden)
+			return
+		}
 		var body struct {
 			Name string `json:"name"`
 		}
@@ -848,6 +904,7 @@ func handleGAIOLKeys(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "gaiol_key_created", map[string]interface{}{"name": body.Name})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]string{"api_key": rawKey, "message": "Show once; store securely"})
@@ -866,6 +923,10 @@ func handleGAIOLKeysID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !canManageKeys(tenantCtx) {
+		http.Error(w, "Forbidden: only admins can revoke GAIOL keys", http.StatusForbidden)
+		return
+	}
 	id := strings.TrimPrefix(r.URL.Path, "/api/gaiol-keys/")
 	if id == "" {
 		http.Error(w, "key id required", http.StatusBadRequest)
@@ -875,7 +936,329 @@ func handleGAIOLKeysID(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	_ = dbClient.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "gaiol_key_revoked", map[string]interface{}{"key_id": id})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func handleActivity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	limit := 50
+	if s := r.URL.Query().Get("limit"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+	entries, err := dbClient.GetAuditLogForTenant(r.Context(), tenantCtx.TenantID, limit)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"activity": entries})
+}
+
+func handlePreferences(w http.ResponseWriter, r *http.Request) {
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s, err := dbClient.GetTenantSettings(r.Context(), tenantCtx.TenantID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		out := map[string]interface{}{"budget_limit": nil, "default_model_id": "", "strategy": "balanced"}
+		if s != nil {
+			out["budget_limit"] = s.BudgetLimit
+			out["default_model_id"] = s.DefaultModelID
+			out["strategy"] = s.Strategy
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(out)
+	case http.MethodPut:
+		var body struct {
+			BudgetLimit    *float64 `json:"budget_limit"`
+			DefaultModelID string   `json:"default_model_id"`
+			Strategy       string   `json:"strategy"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		s, _ := dbClient.GetTenantSettings(r.Context(), tenantCtx.TenantID)
+		if s == nil {
+			s = &database.TenantSettings{TenantID: tenantCtx.TenantID, Strategy: "balanced"}
+		}
+		if body.BudgetLimit != nil {
+			s.BudgetLimit = body.BudgetLimit
+		}
+		if body.Strategy != "" {
+			s.Strategy = body.Strategy
+		}
+		s.DefaultModelID = body.DefaultModelID
+		if err := dbClient.UpsertTenantSettings(r.Context(), s); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func handleUsage(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	from, to := parseUsageRange(r)
+	rows, err := dbClient.GetUsageForTenant(r.Context(), tenantCtx.TenantID, from, to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var totalTokens int
+	var totalCost float64
+	for _, row := range rows {
+		totalTokens += row.TokensUsed
+		totalCost += row.Cost
+	}
+	summary := map[string]interface{}{"requests": len(rows), "tokens": totalTokens, "cost": totalCost}
+	byDay := make(map[string]map[string]interface{})
+	byProvider := make(map[string]map[string]interface{})
+	byKey := make(map[string]map[string]interface{})
+	for _, row := range rows {
+		day := row.CreatedAt.Format("2006-01-02")
+		if byDay[day] == nil {
+			byDay[day] = map[string]interface{}{"date": day, "requests": 0, "tokens": 0, "cost": 0.0}
+		}
+		byDay[day]["requests"] = byDay[day]["requests"].(int) + 1
+		byDay[day]["tokens"] = byDay[day]["tokens"].(int) + row.TokensUsed
+		byDay[day]["cost"] = byDay[day]["cost"].(float64) + row.Cost
+		provider := row.ModelID
+		if idx := strings.Index(provider, ":"); idx > 0 {
+			provider = provider[:idx]
+		}
+		if byProvider[provider] == nil {
+			byProvider[provider] = map[string]interface{}{"provider": provider, "requests": 0, "tokens": 0, "cost": 0.0}
+		}
+		byProvider[provider]["requests"] = byProvider[provider]["requests"].(int) + 1
+		byProvider[provider]["tokens"] = byProvider[provider]["tokens"].(int) + row.TokensUsed
+			byProvider[provider]["cost"] = byProvider[provider]["cost"].(float64) + row.Cost
+		// Per-GAIOL-key usage
+		keyID := ""
+		if row.GAIOLKeyID != nil {
+			keyID = *row.GAIOLKeyID
+		}
+		if keyID != "" {
+			if byKey[keyID] == nil {
+				byKey[keyID] = map[string]interface{}{"key_id": keyID, "requests": 0, "tokens": 0, "cost": 0.0}
+			}
+			byKey[keyID]["requests"] = byKey[keyID]["requests"].(int) + 1
+			byKey[keyID]["tokens"] = byKey[keyID]["tokens"].(int) + row.TokensUsed
+			byKey[keyID]["cost"] = byKey[keyID]["cost"].(float64) + row.Cost
+		}
+	}
+	// Resolve key names for by_key
+	keyList, _ := keys.ListGAIOLKeys(r.Context(), dbClient, tenantCtx.TenantID)
+	keyNames := make(map[string]string)
+	for _, k := range keyList {
+		keyNames[k.ID] = k.Name
+	}
+	var byKeyList []map[string]interface{}
+	for _, v := range byKey {
+		if name := keyNames[v["key_id"].(string)]; name != "" {
+			v["key_name"] = name
+		} else {
+			v["key_name"] = v["key_id"]
+		}
+		byKeyList = append(byKeyList, v)
+	}
+	var byDayList []map[string]interface{}
+	for _, v := range byDay {
+		byDayList = append(byDayList, v)
+	}
+	var byProviderList []map[string]interface{}
+	for _, v := range byProvider {
+		byProviderList = append(byProviderList, v)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"summary":     summary,
+		"by_day":      byDayList,
+		"by_provider": byProviderList,
+		"by_key":      byKeyList,
+	})
+}
+
+func parseUsageRange(r *http.Request) (from, to *time.Time) {
+	if s := r.URL.Query().Get("from"); s != "" {
+		if t, err := time.Parse("2006-01-02", s); err == nil {
+			from = &t
+		}
+	}
+	if s := r.URL.Query().Get("to"); s != "" {
+		if t, err := time.Parse("2006-01-02", s); err == nil {
+			to = &t
+		}
+	}
+	if from == nil {
+		t := time.Now().AddDate(0, 0, -30)
+		from = &t
+	}
+	if to == nil {
+		t := time.Now()
+		to = &t
+	}
+	return from, to
+}
+
+func handleUsageExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	from, to := parseUsageRange(r)
+	rows, err := dbClient.GetUsageForTenant(r.Context(), tenantCtx.TenantID, from, to)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv")
+	w.Header().Set("Content-Disposition", "attachment; filename=usage.csv")
+	w.Write([]byte("date,model_id,tokens_used,cost,processing_time_ms,success\n"))
+	for _, row := range rows {
+		w.Write([]byte(fmt.Sprintf("%s,%s,%d,%.6f,%d,%v\n",
+			row.CreatedAt.Format("2006-01-02"), row.ModelID, row.TokensUsed, row.Cost, row.ProcessingTimeMs, row.Success)))
+	}
+}
+
+func handleBillingSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	now := time.Now()
+	start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
+	rows, err := dbClient.GetUsageForTenant(r.Context(), tenantCtx.TenantID, &start, &now)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var totalCost float64
+	byProvider := make(map[string]float64)
+	for _, row := range rows {
+		totalCost += row.Cost
+		provider := row.ModelID
+		if idx := strings.Index(provider, ":"); idx > 0 {
+			provider = provider[:idx]
+		}
+		byProvider[provider] += row.Cost
+	}
+	var byProviderList []map[string]interface{}
+	for p, c := range byProvider {
+		byProviderList = append(byProviderList, map[string]interface{}{"provider": p, "cost": c})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"period":       start.Format("2006-01"),
+		"total_cost":   totalCost,
+		"by_provider":  byProviderList,
+	})
+}
+
+func handleTenantModels(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	providerKeys, loadErr := keys.LoadProviderKeysForTenant(r.Context(), dbClient, tenantCtx.TenantID)
+	if loadErr != nil {
+		http.Error(w, loadErr.Error(), http.StatusInternalServerError)
+		return
+	}
+	tenantReg, _ := buildRegistryFromKeys(providerKeys, tracker)
+	if tenantReg == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"models": []interface{}{}, "count": 0})
+		return
+	}
+	models := tenantReg.ListModels()
+	list := make([]map[string]interface{}, 0, len(models))
+	for _, m := range models {
+		list = append(list, map[string]interface{}{
+			"id":          string(m.ID),
+			"display_name": m.DisplayName,
+			"provider":   m.Provider,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"models": list, "count": len(list)})
+}
+
+func handleBillingHistory(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	tenantCtx, err := database.EnsureTenantContext(r.Context())
+	if err != nil || dbClient == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	now := time.Now()
+	var history []map[string]interface{}
+	for i := 0; i < 6; i++ {
+		ref := now.AddDate(0, -i, 0)
+		monthStart := time.Date(ref.Year(), ref.Month(), 1, 0, 0, 0, 0, now.Location())
+		monthEnd := monthStart.AddDate(0, 1, 0).Add(-time.Nanosecond)
+		rows, err := dbClient.GetUsageForTenant(r.Context(), tenantCtx.TenantID, &monthStart, &monthEnd)
+		if err != nil {
+			continue
+		}
+		var cost float64
+		for _, row := range rows {
+			cost += row.Cost
+		}
+		history = append(history, map[string]interface{}{
+			"month": monthStart.Format("2006-01"),
+			"total_cost": cost,
+		})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"history": history})
 }
 
 func handleV1Chat(w http.ResponseWriter, r *http.Request) {
@@ -894,11 +1277,35 @@ func handleV1Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawToken := strings.TrimSpace(parts[1])
-	tenantID, err := keys.ValidateGAIOLKey(r.Context(), dbClient, rawToken)
+	tenantID, gaiolKeyID, err := keys.ValidateGAIOLKey(r.Context(), dbClient, rawToken)
 	if err != nil || dbClient == nil {
 		http.Error(w, "Invalid or expired API key", http.StatusUnauthorized)
 		return
 	}
+	// Rate limit: 60 req/min per tenant
+	rateLimitMu.Lock()
+	if rateLimitCount == nil {
+		rateLimitCount = make(map[string][]time.Time)
+	}
+	now := time.Now()
+	cutoff := now.Add(-time.Minute)
+	var kept []time.Time
+	for _, t := range rateLimitCount[tenantID] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	kept = append(kept, now)
+	rateLimitCount[tenantID] = kept
+	if len(kept) > rateLimitPerMin {
+		rateLimitMu.Unlock()
+		w.Header().Set("Retry-After", "60")
+		http.Error(w, "Rate limit exceeded (60 requests per minute per key)", http.StatusTooManyRequests)
+		return
+	}
+	rateLimitMu.Unlock()
+
+	v1Start := time.Now()
 	providerKeys, loadErr := keys.LoadProviderKeysForTenant(r.Context(), dbClient, tenantID)
 	if loadErr != nil {
 		http.Error(w, "Failed to load provider keys", http.StatusInternalServerError)
@@ -925,9 +1332,17 @@ func handleV1Chat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
+	if body.Strategy == "" {
+		if prefs, _ := dbClient.GetTenantSettings(r.Context(), tenantID); prefs != nil && prefs.Strategy != "" {
+			body.Strategy = prefs.Strategy
+		} else {
+			body.Strategy = "balanced"
+		}
+	}
 	sessionID := engine.InitSession(r.Context(), body.Prompt)
 	sm, err := engine.RunSession(r.Context(), sessionID, body.Prompt, []string{})
 	if err != nil {
+		log.Printf("v1/chat tenant_id=%s latency_ms=%d success=false error=%s", tenantID, time.Since(v1Start).Milliseconds(), err.Error())
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error(), "success": false})
@@ -950,7 +1365,8 @@ func handleV1Chat(w http.ResponseWriter, r *http.Request) {
 	if sm != nil {
 		cost = sm.TotalCost
 	}
-	_ = logUsageToAPIQueries(dbClient, tenantCtx, "reasoning-engine", 0, cost, 0, true, "")
+	_ = logUsageToAPIQueries(dbClient, tenantCtx, "reasoning-engine", 0, cost, 0, true, "", gaiolKeyID)
+	log.Printf("v1/chat tenant_id=%s latency_ms=%d success=true", tenantID, time.Since(v1Start).Milliseconds())
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
@@ -1079,6 +1495,69 @@ func handleSignUp(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func handleRecoverPassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !dbAvailable || authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Authentication service unavailable", "success": false})
+		return
+	}
+	var req struct {
+		Email      string `json:"email"`
+		RedirectTo string `json:"redirect_to"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
+		http.Error(w, "Invalid JSON or missing email", http.StatusBadRequest)
+		return
+	}
+	redirectTo := req.RedirectTo
+	if redirectTo == "" {
+		redirectTo = "/reset-password"
+	}
+	if err := authAPI.RecoverPassword(r.Context(), req.Email, redirectTo); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "If an account exists, a recovery email was sent."})
+}
+
+func handleUpdatePassword(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if authAPI == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]interface{}{"error": "Authentication service unavailable", "success": false})
+		return
+	}
+	authHeader := r.Header.Get("Authorization")
+	if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		http.Error(w, "Authorization Bearer token required", http.StatusUnauthorized)
+		return
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+	var req struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
+		http.Error(w, "Invalid JSON or missing password", http.StatusBadRequest)
+		return
+	}
+	if err := authAPI.UpdatePassword(r.Context(), token, req.Password); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "message": "Password updated."})
 }
 
 func handleSignIn(w http.ResponseWriter, r *http.Request) {

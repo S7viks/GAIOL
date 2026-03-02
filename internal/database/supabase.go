@@ -28,6 +28,7 @@ type TenantContext struct {
 	TenantID string
 	UserID   string
 	OrgID    string
+	Role     string // user_profiles.role: user, admin, owner (admin/owner can manage keys)
 }
 
 // NewClient creates a new Supabase database client

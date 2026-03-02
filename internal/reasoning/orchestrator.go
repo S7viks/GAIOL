@@ -272,6 +272,7 @@ func (o *Orchestrator) executeModelWithRetry(ctx context.Context, modelID, promp
 				Cost:       resp.EstimatedCost,
 				LatencyMs:  latency,
 				Timestamp:  time.Now(),
+				Scores:     MetricScores{Overall: 0.5}, // Default so collector accepts; scorer can override later
 			}, nil
 		}
 

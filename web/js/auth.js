@@ -362,10 +362,50 @@ async function refreshSession() {
 }
 
 /**
- * Show forgot password (placeholder)
+ * Show forgot password form and handle submit/cancel
  */
 function showForgotPassword() {
-    showToast('info', 'Password Reset', 'Password reset functionality coming soon');
+    const form = document.getElementById('forgotPasswordForm');
+    const link = document.getElementById('forgotPasswordLink');
+    if (!form || !link) return;
+    form.style.display = 'block';
+    const emailEl = document.getElementById('forgotEmail');
+    const msgEl = document.getElementById('forgotMessage');
+    if (msgEl) { msgEl.style.display = 'none'; msgEl.textContent = ''; }
+    if (emailEl) emailEl.value = '';
+    const cancelBtn = document.getElementById('forgotCancelBtn');
+    const submitBtn = document.getElementById('forgotSubmitBtn');
+    if (cancelBtn) cancelBtn.onclick = function () { form.style.display = 'none'; };
+    if (submitBtn) submitBtn.onclick = function () {
+        const email = emailEl ? emailEl.value.trim() : '';
+        if (!email) {
+            if (typeof showToast === 'function') showToast('error', 'Email required', 'Enter your email address');
+            return;
+        }
+        submitBtn.disabled = true;
+        const redirectTo = (window.location.origin || '') + '/reset-password';
+        fetch('/api/auth/recover', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: email, redirect_to: redirectTo })
+        }).then(function (r) {
+            return r.json().then(function (data) {
+                if (r.ok && data.success) {
+                    if (msgEl) { msgEl.style.display = 'block'; msgEl.textContent = 'If an account exists, a recovery email was sent. Check your inbox.'; msgEl.style.color = ''; }
+                    if (typeof showToast === 'function') showToast('success', 'Email sent', 'Check your email for the reset link');
+                } else {
+                    if (msgEl) { msgEl.style.display = 'block'; msgEl.textContent = data.error || data.message || 'Request failed'; msgEl.style.color = '#f59e0b'; }
+                }
+            }).catch(function () {
+                if (msgEl) { msgEl.style.display = 'block'; msgEl.textContent = r.statusText || 'Request failed'; msgEl.style.color = '#f59e0b'; }
+            });
+        }).catch(function (err) {
+            if (msgEl) { msgEl.style.display = 'block'; msgEl.textContent = err.message || 'Network error'; msgEl.style.color = '#f59e0b'; }
+            if (typeof showToast === 'function') showToast('error', 'Error', err.message || 'Network error');
+        }).finally(function () {
+            submitBtn.disabled = false;
+        });
+    };
 }
 
 /**
@@ -418,6 +458,8 @@ function updateNavigationPageNames() {
 // Initialize auth when DOM is ready
 document.addEventListener('DOMContentLoaded', function () {
     initAuth();
+    var forgotLink = document.getElementById('forgotPasswordLink');
+    if (forgotLink) forgotLink.addEventListener('click', function (e) { e.preventDefault(); showForgotPassword(); });
     updateNavigationPageNames();
 
     // Update auth UI when page changes

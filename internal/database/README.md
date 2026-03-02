@@ -13,7 +13,7 @@ This package provides Supabase database connection and multitenant support for G
 2. **Run Database Migrations:**
    - Open your Supabase dashboard
    - Go to SQL Editor
-   - Run the SQL from `migrations/001_initial_schema.sql`
+   - Run migrations in order (see `migrations/README.md` and [docs/database-setup.md](../../docs/database-setup.md))
 
 3. **Configure Authentication:**
    - In Supabase dashboard, go to Authentication > Settings
