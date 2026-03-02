@@ -20,6 +20,9 @@ vendor/
 # Nested repo (removed submodule; single codebase at root)
 GAIOL/
 
+# Archive (do not track; keeps repo streamlined)
+_archive/
+
 # Go workspace file
 go.work
 
