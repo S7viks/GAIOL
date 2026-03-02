@@ -165,13 +165,15 @@ func main() {
 }
 
 func loadEnv() error {
-	// Try to load .env file
-	if _, err := os.Stat(".env"); err == nil {
-		if err := godotenv.Load(".env"); err != nil {
-			return fmt.Errorf("failed to load .env file: %w", err)
+	// Try to load .env from cwd, then parent dirs (so it works when run from cmd/web-server or project root)
+	for _, path := range []string{".env", "../.env", "../../.env"} {
+		if _, err := os.Stat(path); err == nil {
+			if err := godotenv.Load(path); err != nil {
+				return fmt.Errorf("failed to load %s: %w", path, err)
+			}
+			log.Printf("✅ Loaded environment from %s", path)
+			return nil
 		}
-		log.Println("✅ Loaded environment variables from .env file")
-		return nil
 	}
 	return nil
 }

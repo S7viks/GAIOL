@@ -28,16 +28,26 @@
     pageTitle.textContent = title;
   }
 
+  var _redirecting = false;
   async function api(endpoint, opts) {
+    if (_redirecting) return null;
     const token = typeof getAccessToken === 'function' ? getAccessToken() : null;
-    const res = await fetch(endpoint, {
-      ...opts,
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts && opts.headers || {}) }
-    });
+    var res;
+    try {
+      res = await fetch(endpoint, {
+        ...opts,
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(opts && opts.headers || {}) }
+      });
+    } catch (e) {
+      console.warn('API fetch error:', e);
+      return null;
+    }
     if (res.status === 401) {
+      if (_redirecting) return null;
+      _redirecting = true;
       if (typeof clearTokens === 'function') clearTokens();
       window.location.href = '/login';
-      return;
+      return null;
     }
     const text = await res.text();
     if (!text) return null;
@@ -46,7 +56,8 @@
 
   async function loadUser() {
     const data = await api('/api/auth/user');
-    if (data && data.email) userEmail.textContent = data.email;
+    if (data && data.user && data.user.email) userEmail.textContent = data.user.email;
+    else if (data && data.email) userEmail.textContent = data.email;
   }
 
   function renderHome(data) {
