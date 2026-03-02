@@ -102,8 +102,10 @@ function normalizeModelId(legacyName) {
         'glm': 'openrouter:z-ai/glm-4.5-air:free',
         'deepseek': 'openrouter:deepseek/deepseek-r1:free',
         'hf-llama': 'huggingface:meta-llama/Llama-3.1-8B-Instruct',
+        'gpt4o': 'openrouter:openai/gpt-4o',
         'gpt4mini': 'openrouter:openai/gpt-4o-mini',
-        'claude': 'openrouter:anthropic/claude-3.5-sonnet'
+        'claude': 'openrouter:anthropic/claude-sonnet-4',
+        'grok': 'openrouter:x-ai/grok-2'
     };
 
     return mapping[legacyName] || legacyName;

@@ -98,14 +98,13 @@ func NewOpenRouterAdapter(defaultModel, apiKey string) *OpenRouterAdapter {
 	}
 
 	freeModels := []string{
-		// 2026 WORKING Free Models (verified)
-		"deepseek/deepseek-r1",
-		"xiaomi/mimo-v2-flash",
-		"z-ai/glm-4.5-air",
-		"qwen/qwen3-coder-480b-a35b",
-		"meta-llama/llama-4-maverick",
-		"google/gemini-2.5-pro-exp-03-25",
-		"mistralai/mistral-small-3.1-24b-instruct",
+		"deepseek/deepseek-r1:free",
+		"google/gemini-2.0-flash-exp:free",
+		"google/gemini-flash-1.5:free",
+		"meta-llama/llama-3.2-3b-instruct:free",
+		"mistralai/mistral-7b-instruct:free",
+		"qwen/qwen-2-7b-instruct:free",
+		"moonshotai/kimi-k2:free",
 	}
 
 	return &OpenRouterAdapter{
