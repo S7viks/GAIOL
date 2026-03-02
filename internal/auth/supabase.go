@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"gaiol/internal/database"
@@ -100,9 +101,12 @@ func VerifyToken(tokenString, apiKey string) (*User, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
 		}
-		// For client-side verification, we use the anon key
-		// For server-side verification in production, use SUPABASE_JWT_SECRET
-		return []byte(apiKey), nil
+		// Prefer SUPABASE_JWT_SECRET for server-side verification; fall back to anon key when unset.
+		secret := os.Getenv("SUPABASE_JWT_SECRET")
+		if secret == "" {
+			secret = apiKey
+		}
+		return []byte(secret), nil
 	})
 
 	if err != nil {
