@@ -65,9 +65,10 @@ async function apiRequest(endpoint, method = 'GET', body = null, retries = 3, re
     };
 
     // Add authentication token ONLY if required OR if endpoint needs auth
-    // Don't send tokens for public endpoints to avoid 401 errors on invalid/expired tokens
-    const publicEndpoints = ['/api/models', '/api/query', '/health'];
-    const isPublicEndpoint = publicEndpoints.some(ep => endpoint.startsWith(ep));
+    // Don't send tokens for public endpoints to avoid 401 errors on invalid/expired tokens.
+    // Signin/signup must never receive a stale token or the server validates it and returns 401 before handling login.
+    const isPublicEndpoint = endpoint === '/api/auth/signin' || endpoint === '/api/auth/signup' ||
+        endpoint.startsWith('/api/models') || endpoint.startsWith('/api/query') || endpoint.startsWith('/health');
 
     const token = getAccessToken();
     if (requireAuth || (token && !isPublicEndpoint)) {
@@ -96,8 +97,12 @@ async function apiRequest(endpoint, method = 'GET', body = null, retries = 3, re
                 try {
                     errorData = await response.json();
                 } catch (e) {
-                    // If response is not JSON, use status text
-                    errorData = { error: response.statusText || `HTTP ${response.status}`, message: response.statusText || `HTTP ${response.status}` };
+                    var text = '';
+                    try { text = await response.text(); } catch (e2) {}
+                    errorData = {
+                        error: (text && text.trim()) ? text.trim() : (response.statusText || 'HTTP ' + response.status),
+                        message: (text && text.trim()) ? text.trim() : (response.statusText || 'Unknown error')
+                    };
                 }
                 const errorMessage = errorData.error || errorData.message || `HTTP ${response.status}: ${response.statusText || 'Unknown error'}`;
 
