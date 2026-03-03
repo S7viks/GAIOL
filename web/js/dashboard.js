@@ -473,7 +473,15 @@
 
   navToggle.onclick = function() { sidebar.classList.toggle('open'); };
   document.querySelectorAll('.nav-link').forEach(function(a) {
-    a.onclick = function(e) { e.preventDefault(); window.history.pushState({}, '', a.getAttribute('href')); showPage(getPage()); if (window.innerWidth <= 768) sidebar.classList.remove('open'); };
+    var href = (a.getAttribute('href') || '').split('?')[0];
+    var isDashboardRoute = href === '/dashboard' || href.indexOf('/dashboard/') === 0;
+    a.onclick = function(e) {
+      if (!isDashboardRoute) { return; }
+      e.preventDefault();
+      window.history.pushState({}, '', a.getAttribute('href'));
+      showPage(getPage());
+      if (window.innerWidth <= 768) sidebar.classList.remove('open');
+    };
   });
   window.addEventListener('popstate', function() { showPage(getPage()); });
 
