@@ -430,8 +430,17 @@
       window._createdKey = null;
       content.querySelector('#btnCreateKey').onclick = async function() {
         const res = await fetch('/api/gaiol-keys', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getAccessToken() }, body: JSON.stringify({ name: 'default' }) });
-        const data = await res.json();
+        const text = await res.text();
+        if (!res.ok) {
+          var msg = text;
+          try { var j = JSON.parse(text); if (j && (j.error || j.message)) msg = j.error || j.message; } catch (e) {}
+          alert('Could not create API key: ' + msg);
+          return;
+        }
+        var data = {};
+        try { data = JSON.parse(text); } catch (e) { alert('Invalid response from server'); return; }
         if (data && data.api_key) { window._createdKey = data.api_key; showPage('api-keys'); }
+        else alert('Could not create API key: unexpected response');
       };
       content.querySelectorAll('.btn-revoke-key').forEach(function(btn) {
         btn.onclick = async function() {

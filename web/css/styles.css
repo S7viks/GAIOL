@@ -858,8 +858,8 @@ body::before {
 /* Main Content - Terminal */
 .main-content {
     flex: 1 1 0;
-    min-width: 0;
-    min-height: 0;
+    min-width: 120px;
+    min-height: 200px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -891,7 +891,7 @@ body::before {
     display: flex;
     flex-direction: column;
     flex: 1 1 0;
-    min-height: 0;
+    min-height: 200px;
     overflow: hidden;
     position: relative;
     width: 100%;
@@ -1170,7 +1170,7 @@ body::before {
 /* Chat Container - Wraps messages and input */
 .chat-container {
     flex: 1 1 0;
-    min-height: 0;
+    min-height: 180px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -4493,6 +4493,10 @@ kbd {
 @media (max-width: 768px) {
     .mobile-menu-toggle {
         display: flex;
+    }
+
+    .app-container {
+        padding-left: 0;
     }
 
     .left-sidebar {

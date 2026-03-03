@@ -22,6 +22,7 @@ func (c *Client) GetTenantInfo(ctx context.Context, userID string) (*TenantConte
 			UserID         string  `json:"user_id"`
 			TenantID       *string `json:"tenant_id"`
 			OrganizationID *string `json:"organization_id"`
+			Role           *string `json:"role"`
 		}
 		if err := json.Unmarshal([]byte(resp), &rows); err == nil && len(rows) > 0 {
 			tc := &TenantContext{UserID: userID, OrgID: ""}
@@ -37,6 +38,9 @@ func (c *Client) GetTenantInfo(ctx context.Context, userID string) (*TenantConte
 				tc.UserID = rows[0].UserID
 			} else {
 				tc.UserID = userID
+			}
+			if rows[0].Role != nil {
+				tc.Role = *rows[0].Role
 			}
 			return tc, nil
 		}
