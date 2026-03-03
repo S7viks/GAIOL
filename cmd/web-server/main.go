@@ -188,6 +188,7 @@ func registerRoutes() {
 	http.HandleFunc("/terms", serveStaticPage("terms.html"))
 	http.HandleFunc("/dashboard", serveDashboard)
 	http.HandleFunc("/dashboard/", serveDashboard)
+	http.HandleFunc("/welcome", serveStaticPage("landing.html"))
 	http.HandleFunc("/", noCacheFileServer)
 
 	// 2. Model Routes (public, specific first)
@@ -429,17 +430,17 @@ func noCacheFileServer(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Pragma", "no-cache")
 	w.Header().Set("Expires", "0")
 
-	// Handle root path - serve landing page (no auth required)
+	// Handle root path - serve chat app (no auth required to view)
 	if r.URL.Path == "/" || r.URL.Path == "" {
-		file, err := os.Open("./web/landing.html")
+		file, err := os.Open("./web/index.html")
 		if err != nil {
-			http.Error(w, "landing.html not found", http.StatusNotFound)
+			http.Error(w, "index.html not found", http.StatusNotFound)
 			return
 		}
 		defer file.Close()
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		http.ServeContent(w, r, "landing.html", time.Time{}, file)
+		http.ServeContent(w, r, "index.html", time.Time{}, file)
 		return
 	}
 

@@ -19,7 +19,7 @@ function escapeHtmlText(text) {
  */
 function switchPage(pageId) {
     const pageMap = {
-        'chat': '/index.html',
+        'chat': '/',
         'history': '/history.html',
         'settings': '/settings.html',
         'profile': '/profile.html',
