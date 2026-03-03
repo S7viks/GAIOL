@@ -175,9 +175,7 @@ body::before {
     padding: 8px 20px;
     min-height: 48px;
     border-bottom: 1px solid var(--border-color);
-    background: rgba(10, 10, 11, 0.7);
-    backdrop-filter: blur(30px);
-    -webkit-backdrop-filter: blur(30px);
+    background: var(--bg-secondary);
     position: relative;
     z-index: 15;
     flex-shrink: 0;
@@ -892,15 +890,13 @@ body::before {
 #chatPage {
     display: flex;
     flex-direction: column;
-    height: 100%;
+    flex: 1 1 0;
     min-height: 0;
-    max-height: 100vh;
     overflow: hidden;
     position: relative;
     width: 100%;
     background: var(--bg-primary);
     padding: 0;
-    /* Chat page has its own internal padding */
 }
 
 #chatPage.active {
@@ -1049,13 +1045,12 @@ body::before {
     max-width: 900px;
     margin: 0 auto;
     animation: fadeIn 0.8s ease-out;
-    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
     width: 100%;
-    flex: 1;
+    flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
     z-index: 1;
@@ -1071,10 +1066,7 @@ body::before {
     font-size: 24px;
     font-weight: 700;
     margin-bottom: 4px;
-    background: linear-gradient(90deg, var(--text-primary), var(--accent-primary));
-    -webkit-background-clip: text;
-    background-clip: text;
-    -webkit-text-fill-color: transparent;
+    color: var(--text-primary);
     letter-spacing: -0.01em;
     line-height: 1.1;
 }
