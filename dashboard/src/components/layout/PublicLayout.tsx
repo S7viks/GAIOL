@@ -9,10 +9,10 @@ export function PublicLayout() {
             gaiol<span className="public-nav__brand-accent">_</span>
           </Link>
           <div className="public-nav__links">
-            <a href="/#features">Features</a>
-            <a href="/#how">How it works</a>
-            <Link to="/login">Login</Link>
-            <Link to="/home">Dashboard</Link>
+            <a href="/#dispatch">dispatch</a>
+            <a href="/#compare">diff</a>
+            <Link to="/login">login</Link>
+            <Link to="/home">dashboard</Link>
           </div>
           <Link to="/signup" className="public-nav__cta">
             Get your key

@@ -1,0 +1,8 @@
+{
+  "min_subtasks": 1,
+  "min_path_candidates": 2,
+  "min_routed_models": 2,
+  "min_trust_updates": 1,
+  "consensus_mode": "abtc",
+  "required_model_ids_subset": ["mock-fast", "mock-strong"]
+}

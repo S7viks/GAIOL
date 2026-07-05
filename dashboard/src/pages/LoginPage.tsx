@@ -159,7 +159,11 @@ export function LoginPage() {
               Create new account (signup)
             </Link>
           </form>
-          {error && <div className="error-message">{error}</div>}
+          {error && (
+            <div className="error-message" role="alert">
+              {error}
+            </div>
+          )}
         </div>
       </div>
     </div>

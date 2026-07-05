@@ -1,9 +1,10 @@
 import { useState } from 'react'
+import { PageHeader, PageSection } from '../components/layout/PageShell'
 import { apiPost, ApiError } from '../lib/api'
 import { useToast } from '../components/ui/Toast'
 
 const DEFAULT_EXAMPLES = `[
-  { "objective": "Greet the user", "expectedContains": ["hello", "hi"] }
+  { "objective": "Greet the user", "expectedContains": ["hello"] }
 ]`
 
 export function EvalPage() {
@@ -43,33 +44,44 @@ export function EvalPage() {
 
   return (
     <div className="page">
-      <div className="page-shell__header">
-        <h1>Evaluation (contains harness)</h1>
-        <p className="page-shell__desc">
-          POST <code>/api/orchestration/eval/contains</code> — checks expected substrings against an answer string (no
-          live model call). Requires TS orchestrator on Go.
-        </p>
-      </div>
+      <PageHeader
+        title="Eval"
+        description={
+          <>
+            Offline QA harness: checks whether answer text contains expected substrings (case-insensitive).
+            Does not call a model — paste an answer from Chat or elsewhere, then run eval.
+          </>
+        }
+      />
 
-      <div className="panel page-shell__body">
-        <div className="form-field">
-          <label htmlFor="ex">Examples JSON</label>
-          <textarea id="ex" value={examplesJson} onChange={(e) => setExamplesJson(e.target.value)} spellCheck={false} />
-        </div>
-        <div className="form-field">
-          <label htmlFor="ans">Answer text</label>
-          <textarea id="ans" value={answerText} onChange={(e) => setAnswerText(e.target.value)} />
-        </div>
-        <button type="button" className="btn" onClick={() => void runEval()} disabled={loading}>
-          {loading ? 'Running…' : 'Run eval'}
-        </button>
-      </div>
+      <div className="page-grid page-grid--2">
+        <PageSection title="Input">
+          <div className="form-field">
+            <label htmlFor="ex">Examples JSON</label>
+            <textarea id="ex" value={examplesJson} onChange={(e) => setExamplesJson(e.target.value)} spellCheck={false} />
+          </div>
+          <div className="form-field">
+            <label htmlFor="ans">Answer text</label>
+            <textarea id="ans" value={answerText} onChange={(e) => setAnswerText(e.target.value)} rows={4} />
+            <p className="form-hint">
+              Each string in <code>expectedContains</code> must appear literally in the answer (ignoring case).
+              &quot;Hello there!&quot; matches <code>hello</code> but not <code>hi</code>.
+            </p>
+          </div>
+          <button type="button" className="btn" onClick={() => void runEval()} disabled={loading}>
+            {loading ? 'Running…' : 'Run eval'}
+          </button>
+        </PageSection>
 
-      {resultJson && (
-        <pre className="mono-block panel" style={{ marginTop: 16 }}>
-          {resultJson}
-        </pre>
-      )}
+        <PageSection title="Result">
+          {resultJson ? (
+            <pre className="mono-block">{resultJson}</pre>
+          ) : (
+            <p className="empty-state">Run eval to see output.</p>
+          )}
+        </PageSection>
+      </div>
     </div>
   )
 }
+

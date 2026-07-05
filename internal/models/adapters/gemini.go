@@ -249,8 +249,13 @@ func (g *GeminiAdapter) callGeminiAPIWithModel(ctx context.Context, req *GeminiR
 	return &geminiResp, nil
 }
 
+const geminiMinOutputTokens = 512
+
 func (g *GeminiAdapter) convertToGeminiRequest(req *uaip.UAIPRequest) *GeminiRequest {
 	maxTokens := req.Payload.OutputRequirements.MaxTokens
+	if maxTokens > 0 && maxTokens < geminiMinOutputTokens {
+		maxTokens = geminiMinOutputTokens
+	}
 	temperature := req.Payload.OutputRequirements.Temperature
 	topK := 64
 	topP := 0.95
@@ -303,12 +308,9 @@ func (g *GeminiAdapter) convertToUAIPResponse(resp *GeminiResponse, originalReq 
 	}
 
 	candidate := resp.Candidates[0]
-	var responseText string
-	if len(candidate.Content.Parts) > 0 {
-		responseText = candidate.Content.Parts[0].Text
-	}
+	responseText := joinGeminiParts(candidate.Content.Parts)
 
-	// FIXED: Handle empty responses
+	// Only surface a placeholder when the model returned no text at all.
 	if responseText == "" {
 		responseText = fmt.Sprintf("[Empty response - Finish reason: %s]", candidate.FinishReason)
 	}
@@ -349,6 +351,21 @@ func (g *GeminiAdapter) convertToUAIPResponse(resp *GeminiResponse, originalReq 
 			},
 		},
 	}
+}
+
+func joinGeminiParts(parts []GeminiPart) string {
+	var b strings.Builder
+	for _, p := range parts {
+		t := strings.TrimSpace(p.Text)
+		if t == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(t)
+	}
+	return b.String()
 }
 
 func getPromptTokens(resp *GeminiResponse) int {

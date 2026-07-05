@@ -208,24 +208,27 @@ POST /api/query/smart
 }
 ```
 
-**TypeScript orchestrator path** (when `GAIOL_TS_ORCHESTRATOR_URL` is set and `GAIOL_USE_TS_ORCHESTRATOR=1`, and strategy is not `go_reasoning`): the same endpoint returns additional fields for observability:
+**Go orchestrator path** (`POST /api/query/smart`, `POST /v1/chat`): the same endpoint returns additional fields for observability:
 
-- `metadata.trace_id` — orchestration trace id (same as `metadata.session_id` in the TS delegate path today).
-- `metadata.engine` — `"typescript_orchestrator"`.
+- `metadata.trace_id` — orchestration trace id.
+- `metadata.engine` — `"go_orchestrator"`.
+- `strategy` — `"go_orchestrator"`.
 - `orchestration` — `{ schema_version, trace_id, trust_updates_count, consensus_mode, explore_paths, beam_width }`.
 - `orchestration_trace` — full v1 trace object.
 - `orchestration_trust_updates` — ABTC trust delta list.
-- `orchestration_metrics` — server-side summary (latency, cost, trust movement) aligned with trace metrics.
+- `orchestration_metrics` — server-side summary aligned with trace metrics.
 
-### Orchestration (proxied via Go)
+### Orchestration (Go in-process)
 
-These require the TS orchestrator URL on the Go server. Without it, responses are `503` with `ts_orchestrator_disabled`.
+These are served by the Go web server (`internal/orchestration/`). Without a running Go API, responses are `503`.
 
 ```http
 GET /api/orchestration/traces/{trace_id}
 ```
 
-Returns the TS bundle: `trace`, `timeline_rebuilt`, `metrics_summary`.
+Returns: `trace`, `metrics_summary`.
+
+Also available under `/v1/traces/{trace_id}` for eval script compatibility.
 
 ```http
 GET /api/orchestration/trust?domain=

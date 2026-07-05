@@ -50,7 +50,7 @@ func compileSchema(t *testing.T, relativePathFromModuleRoot string) *jsonschema.
 }
 
 func TestJSONSchema_OrchestrateRequestV1_Fixture(t *testing.T) {
-	sch := compileSchema(t, "orchestrator/contract/schemas/v1/orchestrate-request.schema.json")
+	sch := compileSchema(t, "internal/gaiol/orchestratorcontract/v1/schemas/orchestrate-request.schema.json")
 	req := &OrchestrateRequestV1{
 		SchemaVersion: "1.0",
 		TraceID:       "550e8400-e29b-41d4-a716-446655440000",
@@ -75,7 +75,7 @@ func TestJSONSchema_OrchestrateRequestV1_Fixture(t *testing.T) {
 }
 
 func TestJSONSchema_OrchestrateResponseV1_Fixture(t *testing.T) {
-	sch := compileSchema(t, "orchestrator/contract/schemas/v1/orchestrate-response.schema.json")
+	sch := compileSchema(t, "internal/gaiol/orchestratorcontract/v1/schemas/orchestrate-response.schema.json")
 	out := OrchestrateResponseV1{
 		SchemaVersion: "1.0",
 		TraceID:       "550e8400-e29b-41d4-a716-446655440000",

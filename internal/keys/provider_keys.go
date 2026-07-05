@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -21,7 +22,8 @@ type ProviderKeyRow struct {
 }
 
 // StoreProviderKey encrypts the API key and upserts into provider_api_keys for the tenant.
-// Provider should be "openrouter", "google", or "huggingface". Returns key_hint (e.g. last 4 chars).
+// Provider should be a built-in id (openrouter, openai, anthropic, google, groq, together, huggingface).
+// Ollama is stored via StoreOllamaProvider instead. Returns key_hint (e.g. last 4 chars).
 func StoreProviderKey(ctx context.Context, db *database.Client, tenantID string, provider string, apiKey string) (keyHint string, err error) {
 	if db == nil || db.Client == nil {
 		return "", errors.New("database client is required")
@@ -131,22 +133,25 @@ func LoadProviderKeysForTenant(ctx context.Context, db *database.Client, tenantI
 	for _, r := range rows {
 		plain, err := Decrypt(r.EncryptedKey)
 		if err != nil {
-			continue // skip broken keys
+			log.Printf("keys: decrypt failed for tenant=%s provider=%s: %v", tenantID, r.Provider, err)
+			continue
 		}
-		out[normalizeProvider(r.Provider)] = string(plain)
+		key := strings.TrimSpace(string(plain))
+		if key == "" {
+			log.Printf("keys: empty decrypted key for tenant=%s provider=%s", tenantID, r.Provider)
+			continue
+		}
+		out[normalizeProvider(r.Provider)] = key
 	}
 	return out, nil
 }
 
-func normalizeProvider(p string) string {
-	p = strings.TrimSpace(strings.ToLower(p))
-	switch p {
-	case "openrouter", "huggingface":
-		return p
-	case "google", "gemini":
-		return "google"
+// StoreOllamaProvider registers a local Ollama endpoint (no API key required).
+func StoreOllamaProvider(ctx context.Context, db *database.Client, tenantID string, baseURL string) (string, error) {
+	if strings.TrimSpace(baseURL) == "" {
+		baseURL = "http://localhost:11434"
 	}
-	return ""
+	return StoreCustomProvider(ctx, db, tenantID, "ollama", "openai_compatible", baseURL, "ollama-local", "Authorization", "Bearer")
 }
 
 func keyHintFromKey(apiKey string) string {

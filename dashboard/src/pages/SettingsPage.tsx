@@ -1,60 +1,186 @@
-import { useCallback, useEffect, useState } from 'react'
-import { apiDelete, apiGet, apiPost, apiPut, ApiError } from '../lib/api'
-import { useToast } from '../components/ui/Toast'
-import type { PreferencesResponse, ProviderKeyRow } from '../types/api'
-
-const PROVIDER_OPTIONS = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'google', label: 'Google (Gemini)' },
-  { value: 'huggingface', label: 'Hugging Face' },
-] as const
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { PageAlert, PageHeader, PageSection, PageStack } from '../components/layout/PageShell'
+import { apiDelete, apiGet, apiPost, apiPut, ApiError, fetchHealthBody } from '../lib/api'
+import { apiUrl } from '../lib/apiBase'
+import { fetchSetupStatus, type SetupStatus } from '../lib/setupStatus'
+import { useToast, useToastStore } from '../components/ui/Toast'
+import type {
+  GaiolKeyRow,
+  PreferencesResponse,
+  ProviderKeyRow,
+  TenantModelRow,
+  TenantModelsResponse,
+} from '../types/api'
+import { fetchAuthSession, loginHref } from '../lib/auth'
+import { isLocalProvider, MODEL_SUGGESTIONS, providerMeta, PROVIDER_OPTIONS } from '../lib/providers'
 
 export function SettingsPage() {
   const toast = useToast()
-  const [prefs, setPrefs] = useState<PreferencesResponse | null>(null)
   const [strategy, setStrategy] = useState('balanced')
-  const [defaultModelId, setDefaultModelId] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [budgetLimit, setBudgetLimit] = useState('')
+  const [bootstrapped, setBootstrapped] = useState(false)
+  const [dataLoading, setDataLoading] = useState(true)
+  const [authDisabled, setAuthDisabled] = useState(false)
+  const [authenticated, setAuthenticated] = useState(false)
+  const [healthUnreachable, setHealthUnreachable] = useState(false)
+  const [dbPingHint, setDbPingHint] = useState('')
+  const [orchestrationEnv, setOrchestrationEnv] = useState<{
+    beam_width?: number
+    consensus_mode?: string
+    domain?: string
+    explore_paths?: boolean
+  } | null>(null)
+  const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [providerKeys, setProviderKeys] = useState<ProviderKeyRow[]>([])
   const [newProvider, setNewProvider] = useState<string>('openrouter')
   const [newApiKey, setNewApiKey] = useState('')
+  const [newBaseUrl, setNewBaseUrl] = useState('http://localhost:11434')
   const [savingKey, setSavingKey] = useState(false)
   const [oneTimeGaiolKey, setOneTimeGaiolKey] = useState<string | null>(null)
+  const [gaiolKeys, setGaiolKeys] = useState<GaiolKeyRow[]>([])
+  const [newGaiolKeyName, setNewGaiolKeyName] = useState('default')
+  const [creatingGaiolKey, setCreatingGaiolKey] = useState(false)
+  const [revokingGaiolId, setRevokingGaiolId] = useState<string | null>(null)
+  const [tenantModels, setTenantModels] = useState<TenantModelRow[]>([])
+  const [modelProvider, setModelProvider] = useState('openrouter')
+  const [modelIdInput, setModelIdInput] = useState('')
+  const [modelDisplayName, setModelDisplayName] = useState('')
+  const [modelSaving, setModelSaving] = useState(false)
+  const [removingModel, setRemovingModel] = useState<string | null>(null)
+
+  const savedProviderValues = useMemo(
+    () => providerKeys.map((k) => k.provider).filter((p): p is string => !!p),
+    [providerKeys],
+  )
 
   const loadProviderKeys = useCallback(async () => {
     const raw = await apiGet('/api/settings/provider-keys')
     setProviderKeys(Array.isArray(raw) ? (raw as ProviderKeyRow[]) : [])
   }, [])
 
+  const loadGaiolKeys = useCallback(async () => {
+    const raw = await apiGet('/api/gaiol-keys')
+    setGaiolKeys(Array.isArray(raw) ? (raw as GaiolKeyRow[]) : [])
+  }, [])
+
+  const loadTenantModels = useCallback(async () => {
+    try {
+      const raw = (await apiGet('/api/settings/models')) as TenantModelsResponse
+      setTenantModels(Array.isArray(raw.models) ? raw.models : [])
+    } catch {
+      setTenantModels([])
+    }
+  }, [])
+
+  useEffect(() => {
+    if (savedProviderValues.length === 0) return
+    if (!savedProviderValues.includes(modelProvider)) {
+      setModelProvider(savedProviderValues[0]!)
+    }
+  }, [savedProviderValues, modelProvider])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
-      setLoading(true)
       try {
-        const p = (await apiGet('/api/settings/preferences')) as PreferencesResponse
+        const health = await fetchHealthBody()
         if (!cancelled) {
-          setPrefs(p)
-          setStrategy(p.strategy ?? 'balanced')
-          setDefaultModelId(p.default_model_id ?? '')
+          setAuthDisabled(health.authDisabled)
+          setHealthUnreachable(!health.authDisabled && health.ok && !health.databaseReachable)
+          setDbPingHint(health.databasePingError ?? 'check SUPABASE_URL in .env')
+          setOrchestrationEnv(health.orchestration ?? null)
         }
-        await loadProviderKeys()
+
+        if (!health.authDisabled) {
+          const session = await fetchAuthSession()
+          if (!cancelled) setAuthenticated(session.authenticated)
+        } else if (!cancelled) {
+          setAuthenticated(false)
+        }
       } catch (e) {
-        if (!cancelled) toast.error(e instanceof ApiError ? e.message : String(e))
+        if (!cancelled) {
+          useToastStore.getState().add('error', e instanceof ApiError ? e.message : String(e))
+        }
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) setBootstrapped(true)
       }
     })()
     return () => {
       cancelled = true
     }
-  }, [toast, loadProviderKeys])
+  }, [])
+
+  useEffect(() => {
+    if (!bootstrapped) return
+    let cancelled = false
+    ;(async () => {
+      setDataLoading(true)
+      try {
+        const [setupResult, prefsResult] = await Promise.allSettled([
+          fetchSetupStatus(apiGet),
+          apiGet('/api/settings/preferences'),
+        ])
+        if (!cancelled && setupResult.status === 'fulfilled') {
+          setSetup(setupResult.value)
+        }
+        if (!cancelled && prefsResult.status === 'fulfilled') {
+          const p = prefsResult.value as PreferencesResponse
+          setStrategy(p.strategy ?? 'balanced')
+          setBudgetLimit(p.budget_limit != null ? String(p.budget_limit) : '')
+        } else if (!cancelled && prefsResult.status === 'rejected') {
+          const err = prefsResult.reason
+          if (!(err instanceof ApiError && err.status === 401)) {
+            useToastStore.getState().add(
+              'error',
+              err instanceof ApiError ? err.message : String(err),
+            )
+          }
+        }
+
+        const keyResults = await Promise.allSettled([
+          loadProviderKeys(),
+          loadGaiolKeys(),
+          loadTenantModels(),
+        ])
+        for (const result of keyResults) {
+          if (result.status === 'rejected' && !cancelled) {
+            const err = result.reason
+            if (!(err instanceof ApiError && err.status === 401)) {
+              useToastStore.getState().add(
+                'error',
+                err instanceof ApiError ? err.message : String(err),
+              )
+            }
+          }
+        }
+      } finally {
+        if (!cancelled) setDataLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [bootstrapped, loadProviderKeys, loadGaiolKeys, loadTenantModels])
+
+  function parseBudgetLimit(): number | null {
+    const t = budgetLimit.trim()
+    if (!t) return null
+    const n = Number(t)
+    if (Number.isNaN(n) || n < 0) return null
+    return n
+  }
 
   async function savePrefs() {
+    const budget = parseBudgetLimit()
+    if (budgetLimit.trim() && budget === null) {
+      toast.error('Budget must be a non-negative number or empty')
+      return
+    }
     try {
       await apiPut('/api/settings/preferences', {
         strategy,
-        default_model_id: defaultModelId,
-        budget_limit: prefs?.budget_limit ?? null,
+        default_model_id: '',
+        budget_limit: budget,
       })
       toast.success('Preferences saved')
     } catch (e) {
@@ -63,18 +189,21 @@ export function SettingsPage() {
   }
 
   async function addProviderKey() {
+    const meta = providerMeta(newProvider)
     const trimmed = newApiKey.trim()
-    if (!trimmed) {
+    if (meta?.requiresApiKey !== false && !trimmed) {
       toast.error('Paste an API key first')
       return
     }
     setSavingKey(true)
     setOneTimeGaiolKey(null)
     try {
-      const data = (await apiPost('/api/settings/provider-keys', {
-        provider: newProvider,
-        api_key: trimmed,
-      })) as Record<string, unknown>
+      const payload: Record<string, string> = { provider: newProvider }
+      if (trimmed) payload.api_key = trimmed
+      if (isLocalProvider(newProvider)) {
+        payload.base_url = newBaseUrl.trim() || meta?.defaultBaseUrl || 'http://localhost:11434'
+      }
+      const data = (await apiPost('/api/settings/provider-keys', payload)) as Record<string, unknown>
       setNewApiKey('')
       toast.success('Provider key saved')
       if (typeof data.gaiol_api_key === 'string' && data.gaiol_api_key) {
@@ -82,8 +211,16 @@ export function SettingsPage() {
         toast.info('A GAIOL API key was created — copy it from the yellow box below (shown once).')
       }
       await loadProviderKeys()
+      await loadGaiolKeys()
+      await loadTenantModels()
+      setSetup(await fetchSetupStatus(apiGet))
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : String(e))
+      if (e instanceof ApiError && e.status === 401) {
+        toast.error('Sign in required — open Login from the top bar.')
+        setAuthenticated(false)
+      } else {
+        toast.error(e instanceof ApiError ? e.message : String(e))
+      }
     } finally {
       setSavingKey(false)
     }
@@ -94,10 +231,87 @@ export function SettingsPage() {
       await apiDelete(`/api/settings/provider-keys?provider=${encodeURIComponent(provider)}`)
       toast.success(`Removed ${provider}`)
       await loadProviderKeys()
+      await loadTenantModels()
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : String(e))
     }
   }
+
+  async function upsertTenantModel(provider_key: string, model_id: string, display_name?: string) {
+    setModelSaving(true)
+    try {
+      await apiPost('/api/settings/models', {
+        provider_key,
+        model_id: model_id.trim(),
+        display_name: (display_name ?? model_id).trim(),
+      })
+      toast.success('Model saved')
+      setModelIdInput('')
+      setModelDisplayName('')
+      await loadTenantModels()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setModelSaving(false)
+    }
+  }
+
+  async function removeTenantModel(provider_key: string, model_id: string) {
+    const key = `${provider_key}:${model_id}`
+    setRemovingModel(key)
+    try {
+      await apiDelete(
+        `/api/settings/models?provider_key=${encodeURIComponent(provider_key)}&model_id=${encodeURIComponent(model_id)}`,
+      )
+      toast.success('Model removed')
+      await loadTenantModels()
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setRemovingModel(null)
+    }
+  }
+
+  async function createGaiolKey() {
+    setCreatingGaiolKey(true)
+    setOneTimeGaiolKey(null)
+    try {
+      const data = (await apiPost('/api/gaiol-keys', { name: newGaiolKeyName.trim() || 'default' })) as {
+        api_key?: string
+      }
+      if (data.api_key) {
+        setOneTimeGaiolKey(data.api_key)
+        toast.success('GAIOL API key created — copy it now (shown once)')
+      } else {
+        toast.success('GAIOL API key created')
+      }
+      await loadGaiolKeys()
+      setSetup(await fetchSetupStatus(apiGet))
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setCreatingGaiolKey(false)
+    }
+  }
+
+  async function revokeGaiolKey(id: string) {
+    setRevokingGaiolId(id)
+    try {
+      await apiDelete(`/api/gaiol-keys/${encodeURIComponent(id)}`)
+      toast.success('GAIOL key revoked')
+      await loadGaiolKeys()
+      setSetup(await fetchSetupStatus(apiGet))
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : String(e))
+    } finally {
+      setRevokingGaiolId(null)
+    }
+  }
+
+  const curlSnippet = `curl -X POST ${apiUrl('/v1/chat')} \\
+  -H "Authorization: Bearer YOUR_GAIOL_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt":"Hello from curl","max_tokens":200}'`
 
   async function copyText(text: string) {
     try {
@@ -108,147 +322,433 @@ export function SettingsPage() {
     }
   }
 
+  const canManageKeys = authDisabled ? false : authenticated
+
+  const setupIncomplete =
+    setup &&
+    setup.setup_complete === false &&
+    ((setup.providers_connected ?? 0) === 0 || (setup.gaiol_keys_count ?? 0) === 0)
+
   return (
     <div className="page">
-      <div className="page-shell__header">
-        <h1>Settings</h1>
-        <p className="page-shell__desc">
-          Preferences and encrypted provider keys (auth + database). Keys are stored per tenant; only hints are shown
-          after save. In local no-auth mode, use <code>.env</code> for providers instead.
-        </p>
-      </div>
+      <PageHeader
+        title="Settings"
+        description="Preferences, provider keys, tenant models, and GAIOL API keys."
+      />
 
-      <div className="alert alert--warn" style={{ marginBottom: 16 }}>
-        Orchestration beam width, consensus mode, and TS delegation are controlled by server environment variables (
-        <code>GAIOL_TS_*</code>), not this UI. See docs/FEATURE-FLAGS.md.
-      </div>
+      {authDisabled && (
+        <PageAlert variant="warn" title="Local no-auth mode">
+          Provider keys, GAIOL keys, and tenant models are stored in the database and require Supabase auth.
+          Set provider keys in <code>.env</code> (e.g. <code>OPENROUTER_API_KEY</code>) and restart the server,
+          or unset <code>GAIOL_DISABLE_AUTH</code> and configure Supabase per QUICKSTART.md.
+        </PageAlert>
+      )}
 
-      {loading && <div className="skeleton skeleton--block" />}
+      {!authDisabled && bootstrapped && !authenticated && (
+        <PageAlert variant="warn" title="Sign in required">
+          Provider keys and GAIOL keys are saved per account.{' '}
+          <a href={loginHref()}>Sign in</a> or create an account, then return here.
+        </PageAlert>
+      )}
 
-      {!loading && (
-        <>
-          <div className="panel page-shell__body">
-            <h2 style={{ fontSize: '1rem', marginBottom: 12 }}>Preferences</h2>
-            <div className="form-field">
-              <label htmlFor="strategy">Strategy</label>
-              <input
-                id="strategy"
-                value={strategy}
-                onChange={(e) => setStrategy(e.target.value)}
-                placeholder="balanced"
-              />
-            </div>
-            <div className="form-field">
-              <label htmlFor="dm">Default model id</label>
-              <input
-                id="dm"
-                value={defaultModelId}
-                onChange={(e) => setDefaultModelId(e.target.value)}
-                placeholder="openrouter:…"
-              />
-            </div>
-            <button type="button" className="btn" onClick={() => void savePrefs()}>
-              Save preferences
-            </button>
-          </div>
+      {!authDisabled && bootstrapped && authenticated && healthUnreachable && (
+        <PageAlert variant="warn" title="Database unreachable">
+          The API cannot reach Supabase ({dbPingHint}). Saving keys will fail until the Project URL in{' '}
+          <code>.env</code> is correct and the server is restarted.
+        </PageAlert>
+      )}
 
-          <div className="panel" style={{ marginTop: 16 }}>
-            <h2 style={{ fontSize: '1rem', marginBottom: 12 }}>Model provider API keys</h2>
-            <p className="page-shell__desc" style={{ marginBottom: 12 }}>
-              Add keys your models use (OpenRouter, Gemini, Hugging Face). They are encrypted at rest; the server never
-              returns the full secret after saving.
+      {setupIncomplete && (
+        <PageAlert variant="warn" title="Setup incomplete" actionTo="/onboarding" actionLabel="Complete setup">
+          {(setup?.providers_connected ?? 0) === 0 && 'No provider keys connected. '}
+          {(setup?.gaiol_keys_count ?? 0) === 0 && 'No GAIOL API key yet.'}
+        </PageAlert>
+      )}
+
+      {bootstrapped && orchestrationEnv && (
+        <details className="ui-details page-alert" style={{ marginBottom: 12 }}>
+          <summary>Orchestration (server env)</summary>
+          <div className="ui-details__body">
+            <p className="table-meta" style={{ marginTop: 0 }}>
+              These values come from <code>GAIOL_*</code> in the Go server&apos;s <code>.env</code>. Edit there and restart{' '}
+              <code>go run cmd/web-server/main.go</code> — not in this dashboard.
             </p>
-
-            {oneTimeGaiolKey && (
-              <div
-                className="alert alert--warn"
-                style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}
-              >
-                <span style={{ flex: '1 1 200px' }}>
-                  <strong>GAIOL API key (show once)</strong> — use as <code>Authorization: Bearer</code> for{' '}
-                  <code>/v1/chat</code>:
-                </span>
-                <code className="mono-block" style={{ flex: '1 1 240px', wordBreak: 'break-all', fontSize: '0.8rem' }}>
-                  {oneTimeGaiolKey}
-                </code>
-                <button type="button" className="btn" onClick={() => void copyText(oneTimeGaiolKey)}>
-                  Copy
-                </button>
-                <button type="button" className="btn btn--secondary" onClick={() => setOneTimeGaiolKey(null)}>
-                  Dismiss
-                </button>
-              </div>
-            )}
-
-            <div className="form-field">
-              <label htmlFor="pk-provider">Provider</label>
-              <select
-                id="pk-provider"
-                value={newProvider}
-                onChange={(e) => setNewProvider(e.target.value)}
-                style={{ width: '100%', maxWidth: 320 }}
-              >
-                {PROVIDER_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="form-field">
-              <label htmlFor="pk-key">API key</label>
-              <input
-                id="pk-key"
-                type="password"
-                autoComplete="off"
-                value={newApiKey}
-                onChange={(e) => setNewApiKey(e.target.value)}
-                placeholder="Paste key (sent over HTTPS only)"
-              />
-            </div>
-            <button
-              type="button"
-              className="btn"
-              disabled={savingKey}
-              onClick={() => void addProviderKey()}
-            >
-              {savingKey ? 'Saving…' : 'Save provider key'}
-            </button>
-
-            {providerKeys.length > 0 && (
-              <div style={{ marginTop: 20 }}>
-                <h3 style={{ fontSize: '0.9rem', marginBottom: 8 }}>Saved keys</h3>
-                <table className="mono-block" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
-                  <thead>
-                    <tr style={{ textAlign: 'left', borderBottom: '1px solid var(--border, #333)' }}>
-                      <th style={{ padding: '6px 8px' }}>Provider</th>
-                      <th style={{ padding: '6px 8px' }}>Hint</th>
-                      <th style={{ padding: '6px 8px' }} />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {providerKeys.map((row) => (
-                      <tr key={row.id ?? row.provider} style={{ borderBottom: '1px solid var(--border, #222)' }}>
-                        <td style={{ padding: '6px 8px' }}>{row.provider}</td>
-                        <td style={{ padding: '6px 8px' }}>{row.key_hint ?? '—'}</td>
-                        <td style={{ padding: '6px 8px', textAlign: 'right' }}>
-                          <button
-                            type="button"
-                            className="btn btn--secondary"
-                            style={{ fontSize: '0.8rem' }}
-                            onClick={() => row.provider && void removeProviderKey(row.provider)}
-                          >
-                            Remove
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            <table className="data-table">
+              <tbody>
+                <tr>
+                  <td>Beam width</td>
+                  <td className="mono">{orchestrationEnv.beam_width ?? '—'}</td>
+                  <td className="mono table-meta">GAIOL_BEAM_WIDTH</td>
+                </tr>
+                <tr>
+                  <td>Consensus</td>
+                  <td className="mono">{orchestrationEnv.consensus_mode ?? '—'}</td>
+                  <td className="mono table-meta">GAIOL_CONSENSUS_MODE</td>
+                </tr>
+                <tr>
+                  <td>Domain</td>
+                  <td className="mono">{orchestrationEnv.domain ?? '—'}</td>
+                  <td className="mono table-meta">GAIOL_DOMAIN</td>
+                </tr>
+                <tr>
+                  <td>Explore paths</td>
+                  <td className="mono">{orchestrationEnv.explore_paths ? 'on' : 'off'}</td>
+                  <td className="mono table-meta">GAIOL_EXPLORE_PATHS</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
-        </>
+        </details>
+      )}
+
+      {dataLoading && bootstrapped && <div className="skeleton skeleton--block" aria-hidden />}
+
+      {bootstrapped && (
+        <PageStack>
+          <div className="page-grid page-grid--settings">
+            <PageSection
+              title="Preferences"
+              subtitle="Routing uses every provider with a saved key and your registered models. Strategy and budget apply to orchestration."
+            >
+              <div className="form-field">
+                <label htmlFor="strategy">Strategy</label>
+                <input
+                  id="strategy"
+                  value={strategy}
+                  onChange={(e) => setStrategy(e.target.value)}
+                  placeholder="balanced"
+                />
+              </div>
+              <div className="form-field">
+                <label htmlFor="budget">Monthly budget (USD)</label>
+                <input
+                  id="budget"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={budgetLimit}
+                  onChange={(e) => setBudgetLimit(e.target.value)}
+                  placeholder="optional"
+                />
+              </div>
+              <button type="button" className="btn" onClick={() => void savePrefs()}>
+                Save preferences
+              </button>
+            </PageSection>
+
+            <PageSection title="GAIOL API keys" subtitle="Bearer token for POST /v1/chat">
+              {authDisabled ? (
+                <p className="empty-state">Not available in local no-auth mode.</p>
+              ) : !authenticated ? (
+                <p className="empty-state">
+                  <a href={loginHref()}>Sign in</a> to create GAIOL API keys.
+                </p>
+              ) : (
+                <>
+              {(oneTimeGaiolKey || gaiolKeys.length === 0) && (
+                <div className="form-field">
+                  <label htmlFor="gk-name">Key name</label>
+                  <input
+                    id="gk-name"
+                    value={newGaiolKeyName}
+                    onChange={(e) => setNewGaiolKeyName(e.target.value)}
+                    placeholder="default"
+                  />
+                </div>
+              )}
+              <button
+                type="button"
+                className="btn btn--secondary"
+                disabled={creatingGaiolKey}
+                onClick={() => void createGaiolKey()}
+              >
+                {creatingGaiolKey ? 'Creating…' : gaiolKeys.length === 0 ? 'Create key' : 'Create another'}
+              </button>
+              {gaiolKeys.length > 0 && (
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Name</th>
+                        <th>Created</th>
+                        <th>Last used</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gaiolKeys.map((row) => (
+                        <tr key={row.id ?? row.name}>
+                          <td>{row.name ?? '—'}</td>
+                          <td className="mono">{row.created_at ? row.created_at.slice(0, 10) : '—'}</td>
+                          <td className="mono">{row.last_used_at ? row.last_used_at.slice(0, 10) : 'never'}</td>
+                          <td>
+                            {row.id && (
+                              <button
+                                type="button"
+                                className="btn btn--secondary btn--sm"
+                                disabled={revokingGaiolId === row.id}
+                                onClick={() => void revokeGaiolKey(row.id!)}
+                              >
+                                {revokingGaiolId === row.id ? 'Revoking…' : 'Revoke'}
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <details className="ui-details" style={{ marginTop: 10 }}>
+                <summary>curl example</summary>
+                <div className="ui-details__body">
+                  <pre className="mono-block">{curlSnippet}</pre>
+                  <button type="button" className="btn btn--secondary btn--sm" onClick={() => void copyText(curlSnippet)}>
+                    Copy
+                  </button>
+                </div>
+              </details>
+                </>
+              )}
+            </PageSection>
+          </div>
+
+          <PageSection title="Provider API keys">
+            {authDisabled ? (
+              <p className="empty-state">
+                Configure keys via environment variables and restart the Go server.
+              </p>
+            ) : !authenticated ? (
+              <p className="empty-state">
+                <a href={loginHref()}>Sign in</a> to save provider keys to your account.
+              </p>
+            ) : (
+              <>
+            {oneTimeGaiolKey && (
+              <div className="alert alert--warn page-alert" style={{ marginBottom: 10 }}>
+                <div className="page-alert__body">
+                  <strong>GAIOL key (show once)</strong>
+                  <div className="page-alert__content">
+                    <code className="inline-code">{oneTimeGaiolKey}</code>
+                    <div className="btn-row">
+                      <button type="button" className="btn btn--sm" onClick={() => void copyText(oneTimeGaiolKey)}>
+                        Copy
+                      </button>
+                      <button type="button" className="btn btn--secondary btn--sm" onClick={() => setOneTimeGaiolKey(null)}>
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="page-grid page-grid--sidebar">
+              <div>
+                <div className="form-field">
+                  <label htmlFor="pk-provider">Provider</label>
+                  <select
+                    id="pk-provider"
+                    value={newProvider}
+                    onChange={(e) => {
+                      const v = e.target.value
+                      setNewProvider(v)
+                      const m = providerMeta(v)
+                      if (m?.defaultBaseUrl) setNewBaseUrl(m.defaultBaseUrl)
+                    }}
+                  >
+                    {PROVIDER_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>
+                        {o.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {isLocalProvider(newProvider) ? (
+                  <div className="form-field">
+                    <label htmlFor="pk-base">Ollama base URL</label>
+                    <input
+                      id="pk-base"
+                      value={newBaseUrl}
+                      onChange={(e) => setNewBaseUrl(e.target.value)}
+                      placeholder="http://localhost:11434"
+                    />
+                  </div>
+                ) : (
+                  <div className="form-field">
+                    <label htmlFor="pk-key">API key</label>
+                    <input
+                      id="pk-key"
+                      type="password"
+                      autoComplete="off"
+                      value={newApiKey}
+                      onChange={(e) => setNewApiKey(e.target.value)}
+                      placeholder={providerMeta(newProvider)?.placeholderKeyHint ?? 'Paste key'}
+                    />
+                    {providerMeta(newProvider)?.helpUrl && (
+                      <p className="table-meta">
+                        <a href={providerMeta(newProvider)!.helpUrl} target="_blank" rel="noreferrer">
+                          Get a {providerMeta(newProvider)!.label} key
+                        </a>
+                      </p>
+                    )}
+                  </div>
+                )}
+                <button type="button" className="btn" disabled={savingKey || !canManageKeys} onClick={() => void addProviderKey()}>
+                  {savingKey ? 'Saving…' : isLocalProvider(newProvider) ? 'Connect Ollama' : 'Save key'}
+                </button>
+              </div>
+
+              {providerKeys.length > 0 && (
+                <div className="table-wrap table-wrap--flush">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Provider</th>
+                        <th>Hint</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {providerKeys.map((row) => (
+                        <tr key={row.id ?? row.provider}>
+                          <td>{row.provider}</td>
+                          <td className="mono">{row.key_hint ?? '—'}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn btn--secondary btn--sm"
+                              onClick={() => row.provider && void removeProviderKey(row.provider)}
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+              </>
+            )}
+          </PageSection>
+
+          <PageSection title="Tenant models">
+            {authDisabled ? (
+              <p className="empty-state">Models are loaded from env provider keys in local no-auth mode.</p>
+            ) : savedProviderValues.length === 0 ? (
+              <p className="empty-state">Save a provider key first.</p>
+            ) : (
+              <>
+                <div className="page-grid page-grid--sidebar">
+                  <div>
+                    <div className="form-field">
+                      <label htmlFor="tm-provider">Provider</label>
+                      <select
+                        id="tm-provider"
+                        value={modelProvider}
+                        onChange={(e) => setModelProvider(e.target.value)}
+                        disabled={modelSaving}
+                      >
+                        {savedProviderValues.map((pv) => (
+                          <option key={pv} value={pv}>
+                            {pv}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    {(MODEL_SUGGESTIONS[modelProvider] ?? []).length > 0 && (
+                      <div className="chip-row">
+                        {(MODEL_SUGGESTIONS[modelProvider] ?? []).map((s) => (
+                          <button
+                            key={s.model_id}
+                            type="button"
+                            className="btn btn--secondary btn--sm"
+                            disabled={modelSaving}
+                            onClick={() => void upsertTenantModel(modelProvider, s.model_id, s.display_name)}
+                          >
+                            {s.display_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="form-field">
+                      <label htmlFor="tm-mid">Model id</label>
+                      <input
+                        id="tm-mid"
+                        value={modelIdInput}
+                        onChange={(e) => setModelIdInput(e.target.value)}
+                        placeholder="anthropic/claude-3.5-sonnet"
+                        disabled={modelSaving}
+                      />
+                    </div>
+                    <div className="form-field">
+                      <label htmlFor="tm-name">Display name</label>
+                      <input
+                        id="tm-name"
+                        value={modelDisplayName}
+                        onChange={(e) => setModelDisplayName(e.target.value)}
+                        disabled={modelSaving}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn--secondary"
+                      disabled={modelSaving || !modelIdInput.trim()}
+                      onClick={() => void upsertTenantModel(modelProvider, modelIdInput, modelDisplayName || undefined)}
+                    >
+                      {modelSaving ? 'Saving…' : 'Add model'}
+                    </button>
+                  </div>
+
+                  {tenantModels.length > 0 ? (
+                    <div className="table-wrap table-wrap--flush">
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Provider</th>
+                            <th>Model id</th>
+                            <th>Name</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tenantModels.map((row) => {
+                            const pk = row.provider_key ?? ''
+                            const mid = row.model_id ?? ''
+                            const rmKey = `${pk}:${mid}`
+                            return (
+                              <tr key={row.id ?? rmKey}>
+                                <td>{pk}</td>
+                                <td className="mono">{mid}</td>
+                                <td>{row.display_name ?? '—'}</td>
+                                <td>
+                                  {pk && mid && (
+                                    <button
+                                      type="button"
+                                      className="btn btn--secondary btn--sm"
+                                      disabled={removingModel === rmKey}
+                                      onClick={() => void removeTenantModel(pk, mid)}
+                                    >
+                                      {removingModel === rmKey ? '…' : 'Remove'}
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="empty-state">No tenant models yet.</p>
+                  )}
+                </div>
+              </>
+            )}
+          </PageSection>
+        </PageStack>
       )}
     </div>
   )

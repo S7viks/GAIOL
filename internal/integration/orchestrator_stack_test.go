@@ -4,128 +4,32 @@ package integration
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
-	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"gaiol/internal/httpserver"
-	orchestratorv1 "gaiol/internal/gaiol/orchestratorcontract/v1"
 	"gaiol/internal/models"
-	"gaiol/internal/monitoring"
-	"gaiol/internal/reasoning"
+	"gaiol/internal/orchestration"
 )
 
-var tsOrchestratorBase string
-
-func TestMain(m *testing.M) {
-	root, err := findRepoRoot()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "integration: %v\n", err)
-		os.Exit(1)
-	}
-	orchDir := filepath.Join(root, "orchestrator")
-	distMain := filepath.Join(orchDir, "dist", "api", "server.js")
-	if _, err := os.Stat(distMain); err != nil {
-		fmt.Fprintf(os.Stderr, "integration: orchestrator not built (%v); run: cd orchestrator && npm run build\n", err)
-		os.Exit(1)
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "integration: listen: %v\n", err)
-		os.Exit(1)
-	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(ctx, "node", distMain)
-	cmd.Dir = orchDir
-	cmd.Env = append(os.Environ(),
-		fmt.Sprintf("ORCHESTRATOR_PORT=%d", port),
-		fmt.Sprintf("PORT=%d", port),
-	)
-	cmd.Stdout = io.Discard
-	cmd.Stderr = io.Discard
-	if err := cmd.Start(); err != nil {
-		cancel()
-		fmt.Fprintf(os.Stderr, "integration: start node: %v\n", err)
-		os.Exit(1)
-	}
-
-	tsOrchestratorBase = fmt.Sprintf("http://127.0.0.1:%d", port)
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, tsOrchestratorBase+"/health", nil)
-		resp, err := http.DefaultClient.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				break
-			}
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	if time.Now().After(deadline) {
-		_ = cmd.Process.Kill()
-		cancel()
-		fmt.Fprintf(os.Stderr, "integration: TS orchestrator did not become healthy\n")
-		os.Exit(1)
-	}
-
-	code := m.Run()
-	_ = cmd.Process.Kill()
-	cancel()
-	_ = cmd.Wait()
-	os.Exit(code)
-}
-
-func findRepoRoot() (string, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return "", err
-	}
-	d := wd
-	for i := 0; i < 16; i++ {
-		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
-			return d, nil
-		}
-		d = filepath.Join(d, "..")
-	}
-	return "", fmt.Errorf("go.mod not found from %s", wd)
-}
-
-func benchDeps() *httpserver.Deps {
+func testDeps(t *testing.T) *httpserver.Deps {
+	t.Helper()
 	reg := models.NewRegistry(nil, nil, nil)
 	tracker := models.NewPerformanceTracker(nil)
 	router := models.NewModelRouter(reg, tracker)
 	return &httpserver.Deps{
-		AuthDisabled:           true,
-		Registry:               reg,
-		Router:                 router,
-		Tracker:                tracker,
-		ReasoningAPI:           reasoning.NewReasoningAPI(router, monitoring.NewMetricsService()),
-		WorldModel:             reasoning.NewWorldModel(nil),
-		TSOrchestrator:         orchestratorv1.NewClient(tsOrchestratorBase),
-		TSOrchestratorDelegate: true,
+		AuthDisabled: true,
+		Registry:     reg,
+		Router:       router,
+		Tracker:      tracker,
+		Orchestrator: orchestration.NewService(),
 	}
 }
 
-func testDeps(t *testing.T) *httpserver.Deps {
-	t.Helper()
-	return benchDeps()
-}
-
-func TestGoTSStack_SmartQuery_EndToEnd(t *testing.T) {
+func TestGoOrchestratorStack_SmartQuery_EndToEnd(t *testing.T) {
 	d := testDeps(t)
 	mux := http.NewServeMux()
 	httpserver.Register(mux, d)
@@ -158,8 +62,8 @@ func TestGoTSStack_SmartQuery_EndToEnd(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatal(err)
 	}
-	if out["strategy"] != "ts_orchestrator" {
-		t.Fatalf("expected ts_orchestrator, got %v", out["strategy"])
+	if out["strategy"] != "go_orchestrator" {
+		t.Fatalf("expected go_orchestrator, got %v", out["strategy"])
 	}
 	meta, _ := out["metadata"].(map[string]interface{})
 	if meta == nil || meta["trace_id"] == nil {
@@ -191,7 +95,7 @@ func TestGoTSStack_SmartQuery_EndToEnd(t *testing.T) {
 		t.Fatal("missing orchestration_trust_updates")
 	}
 	if len(tu) == 0 {
-		t.Fatal("expected ABTC trust updates from TS default config")
+		t.Fatal("expected ABTC trust updates from default config")
 	}
 	om, _ := out["orchestration_metrics"].(map[string]interface{})
 	if om == nil {
@@ -201,7 +105,6 @@ func TestGoTSStack_SmartQuery_EndToEnd(t *testing.T) {
 		t.Fatalf("metrics: %+v", om)
 	}
 
-	// Trace proxy on Go mux
 	proxyReq, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/orchestration/traces/"+traceID, nil)
 	pres, err := http.DefaultClient.Do(proxyReq)
 	if err != nil {
@@ -221,7 +124,7 @@ func TestGoTSStack_SmartQuery_EndToEnd(t *testing.T) {
 	}
 }
 
-func TestGoTSStack_MultiModelRoutedIDs(t *testing.T) {
+func TestGoOrchestratorStack_MultiModelRoutedIDs(t *testing.T) {
 	d := testDeps(t)
 	mux := http.NewServeMux()
 	httpserver.Register(mux, d)
@@ -255,11 +158,8 @@ func TestGoTSStack_MultiModelRoutedIDs(t *testing.T) {
 	}
 }
 
-func BenchmarkGoTSOrchestrator_SmartQuery(b *testing.B) {
-	if tsOrchestratorBase == "" {
-		b.Skip("integration TestMain did not set base URL")
-	}
-	d := benchDeps()
+func BenchmarkGoOrchestrator_SmartQuery(b *testing.B) {
+	d := testDeps(&testing.T{})
 	mux := http.NewServeMux()
 	httpserver.Register(mux, d)
 	srv := httptest.NewServer(mux)

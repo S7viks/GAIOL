@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { PageHeader, PageSection } from '../components/layout/PageShell'
 import { apiGet, ApiError } from '../lib/api'
 import { useToast } from '../components/ui/Toast'
 import type { TrustListResponse, TrustRecord } from '../types/api'
 
-function trustMean(d: TrustRecord['distribution']): number {
+function trustMean(d: TrustRecord['distribution'] | undefined): number {
+  if (!d) return 0.5
   const s = d.alpha + d.beta
   if (s <= 0) return 0.5
   return d.alpha / s
@@ -33,75 +35,84 @@ export function TrustPage() {
 
   useEffect(() => {
     void load()
-    // Initial fetch only; use Refresh after changing domain filter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   return (
     <div className="page">
-      <div className="page-shell__header">
-        <h1>Trust (ABTC)</h1>
-        <p className="page-shell__desc">
-          Read-only snapshot from the TS orchestrator via <code>/api/orchestration/trust</code>. Requires TS URL on
-          Go.
-        </p>
-      </div>
+      <PageHeader
+        title="Trust heatmap"
+        description={
+          <>
+            ABTC posteriors from <code>/api/orchestration/trust</code> after smart-query runs.
+          </>
+        }
+      />
 
-      <div className="panel page-shell__body">
-        <div className="form-field">
-          <label htmlFor="domain">Filter by domain (optional)</label>
-          <input
-            id="domain"
-            value={domain}
-            onChange={(e) => setDomain(e.target.value)}
-            placeholder="e.g. general"
-          />
+      <PageSection title="Filter">
+        <div className="page-grid page-grid--sidebar">
+          <div className="form-field">
+            <label htmlFor="domain">Domain (optional)</label>
+            <input
+              id="domain"
+              value={domain}
+              onChange={(e) => setDomain(e.target.value)}
+              placeholder="e.g. general"
+            />
+          </div>
+          <div className="btn-row" style={{ alignSelf: 'end' }}>
+            <button type="button" className="btn" onClick={() => void load()} disabled={loading}>
+              {loading ? 'Loading…' : 'Refresh'}
+            </button>
+          </div>
         </div>
-        <button type="button" className="btn" onClick={() => void load()} disabled={loading}>
-          {loading ? 'Loading…' : 'Refresh'}
-        </button>
-      </div>
+      </PageSection>
 
       {data && (
-        <div className="table-wrap panel" style={{ marginTop: 16 }}>
-          <p className="badge">{data.count} records</p>
-          {data.domain && <span className="badge">domain={data.domain}</span>}
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Domain</th>
-                <th>Mean trust</th>
-                <th>α / β</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.records?.length ? (
-                data.records.map((r) => (
-                  <tr key={`${r.modelId}-${r.domain}`}>
-                    <td>
-                      <Link to={`/models?q=${encodeURIComponent(r.modelId)}`}>{r.modelId}</Link>
-                    </td>
-                    <td>{r.domain}</td>
-                    <td>{trustMean(r.distribution).toFixed(3)}</td>
-                    <td>
-                      {r.distribution.alpha.toFixed(2)} / {r.distribution.beta.toFixed(2)}
-                    </td>
-                    <td>{r.updatedAt}</td>
-                  </tr>
-                ))
-              ) : (
+        <PageSection title="Records">
+          <div className="badge-row">
+            <span className="badge">{data.count} records</span>
+            {data.domain ? <span className="badge">domain={data.domain}</span> : null}
+          </div>
+          <div className="table-wrap table-wrap--flush">
+            <table className="data-table">
+              <thead>
                 <tr>
-                  <td colSpan={5} style={{ color: 'var(--text-secondary)' }}>
-                    No trust rows yet. Run a smart query with TS orchestration (ABTC) to populate.
-                  </td>
+                  <th>Model</th>
+                  <th>Domain</th>
+                  <th>Mean trust</th>
+                  <th>α / β</th>
+                  <th>Updated</th>
                 </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {data.records?.length ? (
+                  data.records.map((r) => (
+                    <tr key={`${r.model_id}-${r.domain}`}>
+                      <td>
+                        <Link to={`/models?q=${encodeURIComponent(r.model_id)}`}>{r.model_id}</Link>
+                      </td>
+                      <td>{r.domain}</td>
+                      <td>{trustMean(r.distribution).toFixed(3)}</td>
+                      <td className="mono">
+                        {(r.distribution?.alpha ?? 0).toFixed(2)} / {(r.distribution?.beta ?? 0).toFixed(2)}
+                      </td>
+                      <td className="mono">{r.updated_at}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <tr>
+                    <td colSpan={5} className="empty-state">
+                      No trust rows yet. Run a smart query to populate ABTC state.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </PageSection>
       )}
     </div>
   )
 }
+

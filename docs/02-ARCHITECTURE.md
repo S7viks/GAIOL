@@ -45,32 +45,30 @@ GAIOL is explicitly designed with an OS-abstraction philosophy:
 
 ---
 
-## Hybrid Runtime: Go + TypeScript
+## Hybrid Runtime: Go shell + TypeScript brain
 
-GAIOL has **two orchestration engines** that can operate together or independently:
+GAIOL has **one inference path**: the Go shell proxies every user prompt to the TypeScript orchestrator.
 
-### Go Backend (primary)
+### Go Backend (shell)
 - Entry: `cmd/web-server/main.go`
 - Serves all HTTP routes, static web assets
-- Contains the Go reasoning orchestrator (`internal/reasoning/`)
-- Handles auth, database, model registry, RAG
+- Handles auth, database, tenant provider keys, usage/billing
+- Resolves tenant credentials and proxies user chat to the TS orchestrator
 
-### TypeScript Orchestrator (optional, advanced)
-- Entry: `orchestrator/src/api/server.ts` (Fastify)
-- Activated via env vars: `GAIOL_TS_ORCHESTRATOR_URL` + `GAIOL_USE_TS_ORCHESTRATOR`
-- Provides more sophisticated pipeline: beam search, ABTC trust, observability traces
-- Go delegates to TS via `/api/query/smart` → `/v1/orchestrate`
-- Exception: `strategy=go_reasoning` forces local Go path
+### TypeScript Orchestrator (brain)
+- Entry: `orchestrator/src/api/server.ts` (Fastify, port 8787)
+- Configured via env vars on Go: `GAIOL_TS_ORCHESTRATOR_URL` + `GAIOL_USE_TS_ORCHESTRATOR`
+- The only component that calls LLM provider APIs for user traffic
+- Pipeline: decomposition, routing, beam search, ABTC trust, observability traces
+- Go delegates via `/api/query/smart` and `/v1/chat` → `POST /v1/orchestrate`
 
 ### Delegation Logic
 ```
-Request to /api/query/smart
+Request to /api/query/smart or /v1/chat
     │
-    ├── TSOrchestratorDelegate && TSOrchestrator != nil?
-    │       YES → Build v1 contract → POST /v1/orchestrate → return normalized response
-    │       NO  → Use internal Go reasoning orchestrator
-    │
-    └── strategy=go_reasoning → Always use Go path (bypass TS)
+    ├── Resolve tenant → resolve tenant credentials (provider keys from DB)
+    ├── Build v1 contract (+ credentials) → POST /v1/orchestrate
+    └── TS unreachable → 503 (no Go fallback)
 ```
 
 ---
@@ -107,13 +105,10 @@ The backend supports two modes, controlled by env flags:
 - `GET /api/models` → all available models
 - `GET /api/models/:provider` → provider-specific models
 
-### Core AI / Reasoning
-- `POST /api/query` → simple query
-- `POST /api/query/smart` → smart query (may delegate to TS orchestrator)
-- `POST /api/query/model` → specific model query
-- `POST /api/reasoning/start` → begin reasoning session
-- `GET /api/reasoning/status/:id` → session status
-- `WS /api/reasoning/ws` → live reasoning event stream
+### Core AI
+- `POST /api/query/smart` → user chat (delegates to TS orchestrator)
+- `POST /v1/chat` → user chat with GAIOL API key (same orchestrate path)
+- `POST /api/query`, `POST /api/query/model` → deprecated (same path or 410)
 - `GET /api/orchestration/traces/:id` → proxy to TS trace endpoint
 
 ### World Model

@@ -8,20 +8,21 @@
 | `cmd/web-server/main.go` | **Primary entrypoint** — boot order, env, auth mode, model registry, all wiring |
 | `internal/httpserver/register.go` | **Route map** — complete API surface |
 | `internal/httpserver/handlers.go` | **All HTTP handlers** — very large, core logic |
-| `internal/httpserver/ts_orchestrator.go` | **Go→TS delegation** — smart query bridge |
-| `internal/reasoning/orchestrator.go` | **Core AI execution** — parallel models, fallback, events |
-| `internal/reasoning/consensus.go` | **Go-side consensus** logic |
+| `internal/orchestration/` | **In-process Go orchestrator** — decompose, beam, ABTC, provider calls |
+| `internal/httpserver/orchestration_api.go` | `/v1/orchestrate`, trace/trust/eval proxies |
+| `internal/httpserver/orchestrate_user.go` | User chat → Go orchestrator |
+| `internal/keys/` | **Tenant provider keys** — encrypted storage, catalog, credential resolution |
 | `internal/models/registry.go` | **Model catalog** — registration + query |
-| `internal/gaiol/orchestratorcontract/v1/client.go` | **TS client** — HTTP calls to /v1/orchestrate |
+| `internal/gaiol/orchestratorcontract/v1/` | **Wire contract** — v1 request/response types + JSON schemas |
 
-### TypeScript Orchestrator — Most Important Files
+### Archived TypeScript Orchestrator (reference + Vitest spec only)
 | File | Why It Matters |
 |---|---|
-| `orchestrator/src/api/server.ts` | **TS entrypoint** — Fastify server + route handlers |
-| `orchestrator/src/orchestration/pipeline.ts` | **Core TS pipeline** — full run loop |
-| `orchestrator/src/consensus/abtc.ts` | **ABTC implementation** — Beta math + updates |
-| `orchestrator/src/contract/v1/wire-types.ts` | **Go↔TS contract** types |
-| `orchestrator/src/persistence/memory-store.ts` | **Default stores** — in-memory (not durable) |
+| `archive/orchestrator/src/api/server.ts` | **TS reference server** — not used at runtime |
+| `archive/orchestrator/src/orchestration/pipeline.ts` | **TS reference pipeline** |
+| `archive/orchestrator/src/consensus/abtc.ts` | **ABTC reference** — Xenova embeddings path |
+| `archive/orchestrator/src/contract/v1/wire-types.ts` | **Contract types** (mirrored in Go) |
+| `archive/orchestrator/src/persistence/memory-store.ts` | **Default TS stores** — in-memory |
 
 ### Frontend — Most Important Files
 | File | Why It Matters |
@@ -36,8 +37,8 @@
 
 ### In the Codebase
 
-1. **TS orchestrator uses in-memory stores by default**  
-   Trust scores and traces are lost on process restart. `FileTrustRepository` exists but isn't default in `server.ts`. Must be explicitly wired.
+1. **Go orchestrator uses in-memory stores by default**  
+   Trust scores and traces are lost on process restart. File/Postgres persistence is not yet ported from the archived TS reference.
 
 2. **Vector insert path marked unimplemented**  
    In `internal/database/vector.go`: the insert path exists but is marked as unimplemented. RAG retrieval works, but programmatic document ingestion via Go may not.
@@ -75,8 +76,7 @@
 | k_models | Number of models selected per subtask step (default: 3) |
 | λ (lambda) | Temporal decay factor in ABTC (default: 0.98, window ≈ 50 interactions) |
 | Trust prior | Beta(1,1) — uniform, non-informative initialization for new models |
-| TS Orchestrator | The TypeScript-based advanced orchestration service (optional) |
-| Go Orchestrator | The Go-based internal reasoning orchestrator (always available) |
+| Go orchestrator | In-process orchestration in `internal/orchestration/` — sole inference engine for user traffic |
 | Tenant | An organizational context (multi-tenant platform) |
 | RLS | Row-Level Security in PostgreSQL — enforces tenant isolation |
 | RAG | Retrieval-Augmented Generation |
@@ -85,7 +85,7 @@
 
 ---
 
-## Consensus Modes (TS Orchestrator)
+## Consensus Modes (Go orchestrator)
 
 | Mode | Behavior |
 |---|---|
@@ -115,12 +115,12 @@ Configure via `GAIOL_CONSENSUS_MODE` env var.
 make test                              # Unit tests
 # Build-tagged integration tests:
 go test -tags=integration ./internal/integration/...
-# Requires TS orchestrator running first
+# Go API on :8080 (no separate orchestrator process)
 ```
 
-### TypeScript Tests (Vitest)
+### TypeScript Tests (Vitest — archived spec)
 ```bash
-cd orchestrator && npm test
+cd archive/orchestrator && npm test
 # Key test files:
 # pipeline.test.ts, beam-pipeline.test.ts, abtc.test.ts,
 # engine.test.ts (consensus), scorer.test.ts, retry.test.ts
@@ -129,8 +129,7 @@ cd orchestrator && npm test
 ### Integration Scripts (Windows)
 ```powershell
 scripts/test/integration.ps1           # HTTP smoke tests
-scripts/test/reasoning-start.ps1       # Reasoning /start smoke (-Raw for JSON)
-scripts/test/go-ts-orchestrator-integration.ps1  # End-to-end with TS orchestrator
+scripts/test/go-orchestrator-integration.ps1  # Integration + optional benchmark
 scripts/test/ollama.ps1                # Local Ollama integration
 ```
 

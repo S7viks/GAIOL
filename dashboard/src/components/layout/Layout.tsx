@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useAppStore } from '../../store'
 import { ToastContainer } from '../ui/Toast'
 import { apiGet, ApiError, fetchHealth, fetchHealthBody } from '../../lib/api'
+import { fetchSetupStatus } from '../../lib/setupStatus'
 import { clearAuthStorage, fetchAuthSession, loginHref, signupHref, signOut } from '../../lib/auth'
 
 type NavItem = {
@@ -271,26 +272,17 @@ export function Layout() {
     if (!sessionEmail) return
 
     const pathname = location.pathname
-    if (pathname === '/onboarding') return
-    if (pathname.startsWith('/onboarding/')) return
+    const setupExempt =
+      pathname === '/onboarding' ||
+      pathname.startsWith('/onboarding/') ||
+      pathname === '/settings'
+
+    if (setupExempt) return
 
     ;(async () => {
       try {
-        const pkRaw = await apiGet('/api/settings/provider-keys')
-        const providerKeys = Array.isArray(pkRaw) ? pkRaw : []
-
-        const gaiolRaw = await apiGet('/api/gaiol-keys')
-        const gaiolKeys = Array.isArray(gaiolRaw) ? gaiolRaw : []
-
-        const modelsPayload = (await apiGet('/api/settings/models')) as { models?: unknown[] }
-        const tenantModelCount = Array.isArray(modelsPayload.models) ? modelsPayload.models.length : 0
-
-        const prefs = (await apiGet('/api/settings/preferences')) as { default_model_id?: string }
-        const hasDefaultModel = !!(prefs?.default_model_id && String(prefs.default_model_id).trim())
-        const modelsConfigured = tenantModelCount > 0 || hasDefaultModel
-
-        const complete = providerKeys.length > 0 && gaiolKeys.length > 0 && modelsConfigured
-        if (!complete) {
+        const status = await fetchSetupStatus(apiGet)
+        if (status?.setup_complete === false) {
           navigate('/onboarding', { replace: true })
         }
       } catch (e) {
@@ -299,13 +291,10 @@ export function Layout() {
           navigate('/login', { replace: true })
           return
         }
-        // Network / 404 / 5xx: still send users to onboarding so they see errors instead of a broken home.
         navigate('/onboarding', { replace: true })
-      } finally {
-        // no-op
       }
     })()
-  }, [apiGet, authDisabled, authLoading, location.pathname, navigate, sessionEmail])
+  }, [authDisabled, authLoading, location.pathname, navigate, sessionEmail])
 
   return (
     <div className="layout">

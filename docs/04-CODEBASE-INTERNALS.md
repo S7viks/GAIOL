@@ -58,28 +58,9 @@ Model abstraction and provider execution backend.
 - `openrouter.go`, `huggingface.go`, `ollama.go`, `gemini.go`, `anthropic.go`, `openai_compatible.go`
 - `response_cleaner.go` — normalizes provider-specific output
 
-### `internal/reasoning`
-The core intelligence subsystem — the most important package.
-
-| File | Purpose |
-|---|---|
-| `types.go` | Shared reasoning/session/step/output/event data types |
-| `engine.go` | Session lifecycle and orchestration flow control |
-| `orchestrator.go` | Parallel model execution, fast-fail bias, timeout protection, fallback chain (Ollama → HuggingFace), event emission |
-| `decomposer.go` | Prompt decomposition (JSON extraction + fallback 7-step template) |
-| `scorer.go` | Output scoring and weighted quality computation |
-| `consensus.go` | Consensus selection logic over candidate outputs |
-| `selector.go` | Final selection/composition helpers |
-| `prompts.go` | Prompt wrapping/context trimming |
-| `query.go` | Query model wrapper |
-| `memory.go`, `cache.go` | Session/step/output memory handling + buffering |
-| `world_model.go` | Knowledge/facts memory operations |
-| `rag.go` | Retrieval augmentation with vector store + embedder |
-| `events.go` | Event types/callback scaffolding for live updates |
-| `handlers.go` | Reasoning API handlers consumed by HTTP server |
-| `agent.go`, `agent_orchestrator.go` | Role-based/simple agent workflow abstractions |
-
-**Tests**: `engine_test.go`, `orchestrator_test.go`, `handlers_buffer_test.go`, `testing.go`
+### `internal/reasoning` (removed)
+The legacy in-process Go reasoning engine has been **removed**. All user inference runs through the TypeScript
+orchestrator (`orchestrator/`) via `POST /v1/orchestrate`; see [gaiol-ts-orchestrator-wiring.md](gaiol-ts-orchestrator-wiring.md).
 
 ### `internal/uaip`
 Canonical protocol DTO layer across all adapters and orchestrators.
@@ -292,7 +273,7 @@ HUGGINGFACE_API_KEY=...
 GEMINI_API_KEY=...
 
 # TypeScript orchestrator
-GAIOL_TS_ORCHESTRATOR_URL=http://localhost:3001
+GAIOL_TS_ORCHESTRATOR_URL=http://localhost:8787
 GAIOL_USE_TS_ORCHESTRATOR=true
 
 # TS orchestrator beam/consensus tuning

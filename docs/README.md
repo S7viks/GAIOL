@@ -25,11 +25,24 @@ Entry points at repo root: [README.md](../README.md), [QUICKSTART.md](../QUICKST
 | [authentication.md](authentication.md) | Auth endpoints and frontend usage |
 | [ollama-setup.md](ollama-setup.md) | Optional Ollama setup |
 
+## Planning
+
+| Document | Purpose |
+|----------|---------|
+| [RELAY-UNIFIED-PLAN.md](RELAY-UNIFIED-PLAN.md) | **Active plan:** one pipeline, merged Go shell + TS brain, HCC, world-model/benchmarks as product |
+| [RELAY-PRODUCT-VISION.md](RELAY-PRODUCT-VISION.md) | **Product vision:** who Relay serves, cost/performance value, user journeys (companion to unified plan) |
+| [FABLE-BUILD-PROMPT.md](FABLE-BUILD-PROMPT.md) | **Agent prompt:** copy-paste mission for Fable / long-horizon coding agents (Phases 0–8) |
+
+## Positioning
+
+| Document | Purpose |
+|----------|---------|
+| [comparison-fugu.md](comparison-fugu.md) | GAIOL / Relay vs Sakana Fugu (external; not in repo) |
+
 ## Architecture and routing
 
 | Document | Purpose |
 |----------|---------|
-| [simplified-architecture.md](simplified-architecture.md) | Reasoning engine flow (decompose, beam, consensus) |
 | [routing.md](routing.md) | Route registration and middleware |
 
 ## Operations

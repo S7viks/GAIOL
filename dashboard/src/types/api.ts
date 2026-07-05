@@ -39,10 +39,10 @@ export interface SmartQueryResponse {
 }
 
 export interface TrustRecord {
-  modelId: string
+  model_id: string
   domain: string
   distribution: { alpha: number; beta: number }
-  updatedAt: string
+  updated_at: string
 }
 
 export interface TrustListResponse {
@@ -75,7 +75,6 @@ export interface ActivityResponse {
 
 export interface PreferencesResponse {
   budget_limit?: number | null
-  default_model_id?: string
   strategy?: string
 }
 
@@ -87,6 +86,14 @@ export interface ProviderKeyRow {
   is_active?: boolean
   created_at?: string
   updated_at?: string
+}
+
+/** GET /api/gaiol-keys — tenant Relay/GAIOL API keys (secret not returned). */
+export interface GaiolKeyRow {
+  id?: string
+  name?: string
+  created_at?: string
+  last_used_at?: string | null
 }
 
 /** GET /api/settings/models — tenant-routable models (production DB). */
@@ -101,4 +108,49 @@ export interface TenantModelRow {
   max_tokens?: number
   tags?: string[]
   is_active?: boolean
+}
+
+export interface TenantModelsResponse {
+  models?: TenantModelRow[]
+}
+
+/** GET /api/usage */
+export interface UsageSummary {
+  requests?: number
+  tokens?: number
+  cost?: number
+}
+
+export interface UsageBreakdownRow {
+  date?: string
+  provider?: string
+  key_id?: string
+  key_name?: string
+  requests?: number
+  tokens?: number
+  cost?: number
+}
+
+export interface UsageResponse {
+  summary?: UsageSummary
+  by_day?: UsageBreakdownRow[]
+  by_provider?: UsageBreakdownRow[]
+  by_key?: UsageBreakdownRow[]
+}
+
+/** GET /api/billing/summary */
+export interface BillingSummaryResponse {
+  period?: string
+  total_cost?: number
+  by_provider?: { provider?: string; cost?: number }[]
+}
+
+/** GET /api/billing/history */
+export interface BillingHistoryEntry {
+  month?: string
+  total_cost?: number
+}
+
+export interface BillingHistoryResponse {
+  history?: BillingHistoryEntry[]
 }

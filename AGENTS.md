@@ -14,14 +14,14 @@ Use this file as the primary project briefing. Ignore research papers, benchmark
 | HTTP server entry                 | `cmd/web-server/` | `go run cmd/web-server/main.go`                          |
 | Backend logic                     | `internal/`       | Auth, DB, handlers, model adapters, orchestration glue   |
 | Dashboard UI                      | `dashboard/`      | `npm ci && npm run dev` in `dashboard/`                  |
-| TypeScript orchestrator (if used) | `orchestrator/`   | Fastify service; not always required for local dashboard |
+| Go orchestrator (runtime) | `internal/orchestration/` | In-process; all chat flows through Go web server |
 | DB migrations                     | `migrations/`     | Apply per `docs/database-setup.md`                       |
 | Env template                      | `.env.example`    | Supabase, encryption key, optional `GAIOL_DISABLE_AUTH`  |
 
 
 ## What to deprioritize unless asked
 
-- `archive/` — legacy static dashboard
+- `archive/` — legacy static dashboard, archived TS orchestrator spec
 - `eval/`, benchmark scripts, LaTeX/paper assets — research / metrics
 - `web/` — separate package; confirm README before changing
 

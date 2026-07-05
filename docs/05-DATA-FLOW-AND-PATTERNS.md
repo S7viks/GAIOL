@@ -11,7 +11,7 @@ Web Client
 API Gateway (httpserver)
     │ Auth middleware: validate bearer token → verify via Supabase → attach user context
     │ Route classification:
-    │   ├── Conversational/reasoning → Orchestrator
+    │   ├── Conversational → proxy to TS orchestrator (POST /v1/orchestrate + tenant credentials)
     │   └── Administrative → Control services
     │ Load conversation history (returning users) OR new session (new users)
     ▼
@@ -82,31 +82,6 @@ Validated Response
 
 ---
 
-## Go Reasoning Orchestrator — Execution Detail
-
-From `internal/reasoning/orchestrator.go`:
-
-```
-Incoming reasoning request
-    │
-    ├── Dynamic model routing (if model set is empty/"auto")
-    │
-    ├── Optional RAG prompt augmentation (before model execution)
-    │
-    ├── Parallel model calls
-    │   └── First-success bias + timeout protections
-    │
-    ├── Retry wrapper
-    │
-    ├── Multi-level fallback (if all selected models fail):
-    │   ├── Level 1: Local Ollama probe → Ollama generation
-    │   └── Level 2: HuggingFace fallback generation
-    │
-    └── Emit reasoning events for live WebSocket updates
-```
-
----
-
 ## TypeScript Orchestrator Pipeline — Detailed Steps
 
 From `orchestrator/src/orchestration/pipeline.ts`:
@@ -150,26 +125,14 @@ OrchestratorPipeline.run(request)
 
 ## Frontend Query Submission Flow
 
-```javascript
-// main.js
-handleQuerySubmit()
-    └── executeReasoningQuery()
+```
+ChatPage (dashboard/src/pages/ChatPage.tsx)
+    └── onSubmit()
         │
-        1. Add user chat bubble to UI
-        2. Add assistant placeholder bubble
-        3. POST /api/reasoning/start → get session ID
-        4. Subscribe to WebSocket /api/reasoning/ws?session={id}
-        │
-        On WebSocket events:
-        ├── reasoning_start → show "Analyzing..." status
-        ├── decomposition → show subtask breakdown
-        ├── model_selected → show which models are being used
-        ├── step_complete → update progress
-        ├── reasoning_end → 
-        │   ├── Display final output in assistant bubble
-        │   ├── Persist to history
-        │   └── Refresh sidebar
-        └── error → show error state
+        1. POST /api/query/smart { prompt, strategy, task, max_tokens, temperature }
+        2. Go resolves tenant credentials → POST /v1/orchestrate on the TS orchestrator
+        3. Response rendered with answer + trace id
+        4. Trace id links to /trace/:id (Trace Viewer)
 ```
 
 ---
@@ -235,27 +198,20 @@ Runs outside the request path:
 ### Provider Adapter Pattern
 Every LLM provider adapter implements the same `ModelAdapter` interface. Adding or swapping a provider requires no changes to orchestration logic — only a new adapter file.
 
-### Event-Driven Reasoning
-The reasoning subsystem emits observable events at every stage, enabling:
+### Event-Driven Orchestration
+The TS orchestrator emits observability events at every pipeline stage, enabling:
 - Asynchronous processing
 - Loose coupling between components
-- Complete audit trails
-- Live WebSocket updates to the frontend
+- Complete audit trails (traces)
 
 ### No-Auth / Auth Mode Switch
 The entire system can run with or without Supabase auth via env flags, making local development frictionless without requiring cloud infrastructure.
 
 ### Stateless Architecture
-The Go reasoning pipeline is stateless and horizontally partitionable. Multiple Go instances can serve requests behind a load balancer. The TS orchestrator also targets stateless design (in-memory state is per-process, durable via file trust store if needed).
+The Go shell is stateless and horizontally partitionable. Multiple Go instances can serve requests behind a load balancer. The TS orchestrator also targets stateless design (in-memory state is per-process, durable via file trust store if needed).
 
 ### Graceful Degradation
-Multi-level fallback in the Go orchestrator:
-1. Primary model selection
-2. First-success from parallel execution
-3. Local Ollama
-4. HuggingFace
-
-This means the system continues to serve responses even when primary providers fail.
+Within a single orchestrate run, the TS pipeline retries failed model calls and routes across the tenant's full provider pool. If the orchestrator itself is unreachable, chat endpoints return 503 — there is no secondary inference path.
 
 ---
 

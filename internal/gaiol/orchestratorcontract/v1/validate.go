@@ -17,8 +17,12 @@ var allowedConsensus = map[string]struct{}{
 	"uniform": {}, "static": {}, "abtc": {},
 }
 
+var allowedCredentialKinds = map[string]struct{}{
+	"openai_compatible": {}, "anthropic_messages": {}, "gemini": {}, "ollama": {},
+}
+
 // ValidateOrchestrateRequestV1 performs minimal structural checks after JSON decode.
-// JSON Schema is enforced in tests against orchestrator/contract/schemas/v1.
+// JSON Schema is enforced in tests against internal/gaiol/orchestratorcontract/v1/schemas/.
 func ValidateOrchestrateRequestV1(r *OrchestrateRequestV1) error {
 	if r == nil {
 		return fmt.Errorf("request is nil")
@@ -46,6 +50,27 @@ func ValidateOrchestrateRequestV1(r *OrchestrateRequestV1) error {
 	if r.ConsensusMode != "" {
 		if _, ok := allowedConsensus[r.ConsensusMode]; !ok {
 			return fmt.Errorf("invalid consensus_mode %q", r.ConsensusMode)
+		}
+	}
+	if r.Credentials != nil {
+		if r.Credentials.SchemaVersion != "1" {
+			return fmt.Errorf("credentials.schema_version must be 1, got %q", r.Credentials.SchemaVersion)
+		}
+		if len(r.Credentials.Providers) == 0 {
+			return fmt.Errorf("credentials.providers must be non-empty when credentials are present")
+		}
+		for i, p := range r.Credentials.Providers {
+			if strings.TrimSpace(p.ID) == "" {
+				return fmt.Errorf("credentials.providers[%d]: id is required", i)
+			}
+			if _, ok := allowedCredentialKinds[p.Kind]; !ok {
+				return fmt.Errorf("credentials.providers[%d]: invalid kind %q", i, p.Kind)
+			}
+		}
+		for i, m := range r.Credentials.Models {
+			if strings.TrimSpace(m.Provider) == "" || strings.TrimSpace(m.ModelID) == "" {
+				return fmt.Errorf("credentials.models[%d]: provider and model_id are required", i)
+			}
 		}
 	}
 	return nil

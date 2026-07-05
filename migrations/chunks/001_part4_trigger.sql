@@ -4,11 +4,12 @@
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS TRIGGER AS $$
 BEGIN
-    INSERT INTO public.user_profiles (id, email, tenant_id)
+    INSERT INTO public.user_profiles (id, email, tenant_id, role)
     VALUES (
         NEW.id,
         NEW.email,
-        NEW.id
+        NEW.id,
+        'owner'
     );
     RETURN NEW;
 END;

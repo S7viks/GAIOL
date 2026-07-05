@@ -18,6 +18,7 @@ type OrchestrationMetricsSummary struct {
 	TotalRetries          int                `json:"total_retries"`
 	LatencyMs             LatencySummary     `json:"latency_ms"`
 	CostUSD               CostSummary        `json:"cost_usd"`
+	TotalTokens           int                `json:"total_tokens"`
 	Beam                  BeamSummary        `json:"beam"`
 	Trust                 TrustMetricsSummary `json:"trust"`
 }
@@ -78,6 +79,7 @@ func SummarizeOrchestrationTrace(trace *OrchestrationTraceV1, totalRetries int) 
 	byModel := map[string]float64{}
 	byProvider := map[string]float64{}
 	costTotal := 0.0
+	totalTokens := 0
 	totalCalls, okCalls, failCalls := 0, 0, 0
 	maxBeam := 0
 	pruned, kept := 0, 0
@@ -112,6 +114,14 @@ func SummarizeOrchestrationTrace(trace *OrchestrationTraceV1, totalRetries int) 
 			cost := 0.0
 			if c.Usage != nil && c.Usage.CostUsd != nil {
 				cost = *c.Usage.CostUsd
+			}
+			if c.Usage != nil {
+				if c.Usage.PromptTokens != nil {
+					totalTokens += *c.Usage.PromptTokens
+				}
+				if c.Usage.CompletionTokens != nil {
+					totalTokens += *c.Usage.CompletionTokens
+				}
 			}
 			costTotal += cost
 			byModel[c.ModelID] += cost
@@ -158,6 +168,7 @@ func SummarizeOrchestrationTrace(trace *OrchestrationTraceV1, totalRetries int) 
 			ByModel:    byModel,
 			ByProvider: byProvider,
 		},
+		TotalTokens: totalTokens,
 		Beam: BeamSummary{
 			MaxBeamWidth:    maxBeam,
 			PrunedPathCount: pruned,

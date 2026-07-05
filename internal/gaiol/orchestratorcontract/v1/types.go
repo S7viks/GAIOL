@@ -1,7 +1,7 @@
 package v1
 
 // Wire DTOs for GAIOL orchestration contract v1 (JSON, snake_case).
-// Canonical schemas: orchestrator/contract/schemas/v1/*.schema.json
+// Canonical schemas: schemas/*.schema.json in this package.
 
 type ChatMessageV1 struct {
 	Role    string `json:"role"`
@@ -17,18 +17,45 @@ type TaskConstraintsV1 struct {
 	MaxOutputTokens     *int     `json:"max_output_tokens,omitempty"`
 }
 
+// ProviderCredentialV1 is one tenant provider credential forwarded to the orchestrator.
+// APIKey is a secret: never log it and never echo it back in responses.
+type ProviderCredentialV1 struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"` // openai_compatible | anthropic_messages | gemini | ollama
+	APIKey  string `json:"api_key,omitempty"`
+	BaseURL string `json:"base_url,omitempty"`
+}
+
+// CredentialModelV1 registers one routable model for the request's provider pool.
+type CredentialModelV1 struct {
+	Provider    string `json:"provider"`
+	ModelID     string `json:"model_id"`
+	DisplayName string `json:"display_name,omitempty"`
+}
+
+// RequestCredentialsV1 carries the tenant's full provider pool for a single orchestrate call.
+// When present, the orchestrator must use only these credentials (no env fallback).
+type RequestCredentialsV1 struct {
+	SchemaVersion  string                 `json:"schema_version"`
+	Providers      []ProviderCredentialV1 `json:"providers"`
+	Models         []CredentialModelV1    `json:"models,omitempty"`
+	DefaultModelID string                 `json:"default_model_id,omitempty"`
+}
+
 type OrchestrateRequestV1 struct {
-	SchemaVersion string             `json:"schema_version"`
-	TraceID       string             `json:"trace_id"`
-	SessionID     string             `json:"session_id,omitempty"`
-	Domain        string             `json:"domain"`
-	TaskKind      string             `json:"task_kind"`
-	Objective     string             `json:"objective"`
-	Messages      []ChatMessageV1    `json:"messages"`
-	Constraints   *TaskConstraintsV1 `json:"constraints,omitempty"`
-	ExplorePaths  *bool              `json:"explore_paths,omitempty"`
-	BeamWidth     *int               `json:"beam_width,omitempty"`
-	ConsensusMode string             `json:"consensus_mode,omitempty"`
+	SchemaVersion string                `json:"schema_version"`
+	TraceID       string                `json:"trace_id"`
+	SessionID     string                `json:"session_id,omitempty"`
+	Domain        string                `json:"domain"`
+	TaskKind      string                `json:"task_kind"`
+	Objective     string                `json:"objective"`
+	Messages      []ChatMessageV1       `json:"messages"`
+	Constraints   *TaskConstraintsV1    `json:"constraints,omitempty"`
+	ExplorePaths  *bool                 `json:"explore_paths,omitempty"`
+	BeamWidth     *int                  `json:"beam_width,omitempty"`
+	ConsensusMode string                `json:"consensus_mode,omitempty"`
+	AbtcDecay     *float64              `json:"abtc_decay,omitempty"`
+	Credentials   *RequestCredentialsV1 `json:"credentials,omitempty"`
 }
 
 type BetaDistributionV1 struct {

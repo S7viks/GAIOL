@@ -78,6 +78,24 @@ func (r *Registry) AddGeminiModels(adapter ModelAdapter) {
 		CostPerToken  float64
 		Tags          []string
 	}{
+		"gemini-2.5-pro": {
+			DisplayName:   "Gemini 2.5 Pro",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskSummarize, TaskCode, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 1048576,
+			QualityScore:  0.97,
+			CostPerToken:  0.0,
+			Tags:          []string{"frontier", "google", "multimodal"},
+		},
+		"gemini-2.5-flash": {
+			DisplayName:   "Gemini 2.5 Flash",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskSummarize, TaskCode},
+			MaxTokens:     8192,
+			ContextWindow: 1048576,
+			QualityScore:  0.93,
+			CostPerToken:  0.0,
+			Tags:          []string{"fast", "google"},
+		},
 		"gemini-1.5-flash": {
 			DisplayName:   "Gemini 1.5 Flash",
 			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskSummarize, TaskTransform},
@@ -202,7 +220,16 @@ func (r *Registry) registerOpenRouterModels(adapter ModelAdapter) {
 			Tags:          []string{"free"},
 		},
 
-		// === PREMIUM MODELS ===
+		// === PREMIUM / FRONTIER MODELS ===
+		"anthropic/claude-opus-4": {
+			DisplayName:   "Claude Opus 4",
+			Capabilities:  []TaskType{TaskSummarize, TaskAnalyze, TaskGenerate, TaskCode, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 200000,
+			QualityScore:  0.98,
+			CostPerToken:  0.00002,
+			Tags:          []string{"long_context", "premium", "frontier", "anthropic"},
+		},
 		"anthropic/claude-sonnet-4": {
 			DisplayName:   "Claude Sonnet 4",
 			Capabilities:  []TaskType{TaskSummarize, TaskAnalyze, TaskGenerate, TaskCode, TaskLogic},
@@ -221,6 +248,15 @@ func (r *Registry) registerOpenRouterModels(adapter ModelAdapter) {
 			CostPerToken:  0.000015,
 			Tags:          []string{"long_context", "premium", "high_quality", "logic", "anthropic"},
 		},
+		"openai/gpt-4.1": {
+			DisplayName:   "GPT-4.1",
+			Capabilities:  []TaskType{TaskGenerate, TaskCode, TaskAnalyze, TaskSummarize, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 1048576,
+			QualityScore:  0.97,
+			CostPerToken:  0.000008,
+			Tags:          []string{"premium", "frontier", "openai"},
+		},
 		"openai/gpt-4o": {
 			DisplayName:   "GPT-4o",
 			Capabilities:  []TaskType{TaskGenerate, TaskCode, TaskAnalyze, TaskSummarize, TaskLogic},
@@ -238,6 +274,51 @@ func (r *Registry) registerOpenRouterModels(adapter ModelAdapter) {
 			QualityScore:  0.88,
 			CostPerToken:  0.000003,
 			Tags:          []string{"cheap", "good_quality", "fast", "openai"},
+		},
+		"google/gemini-2.5-pro-preview": {
+			DisplayName:   "Gemini 2.5 Pro",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskSummarize, TaskCode, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 1048576,
+			QualityScore:  0.97,
+			CostPerToken:  0.000006,
+			Tags:          []string{"premium", "frontier", "google", "multimodal"},
+		},
+		"google/gemini-2.5-flash-preview": {
+			DisplayName:   "Gemini 2.5 Flash",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskSummarize, TaskCode},
+			MaxTokens:     8192,
+			ContextWindow: 1048576,
+			QualityScore:  0.93,
+			CostPerToken:  0.000002,
+			Tags:          []string{"premium", "fast", "google"},
+		},
+		"meta-llama/llama-4-maverick": {
+			DisplayName:   "Llama 4 Maverick",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskCode},
+			MaxTokens:     8192,
+			ContextWindow: 256000,
+			QualityScore:  0.94,
+			CostPerToken:  0.000004,
+			Tags:          []string{"premium", "frontier", "open_source", "meta"},
+		},
+		"x-ai/grok-3": {
+			DisplayName:   "Grok 3",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskCode, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 131072,
+			QualityScore:  0.95,
+			CostPerToken:  0.000012,
+			Tags:          []string{"premium", "frontier", "xai", "grok"},
+		},
+		"qwen/qwen-max": {
+			DisplayName:   "Qwen Max",
+			Capabilities:  []TaskType{TaskGenerate, TaskAnalyze, TaskCode, TaskLogic},
+			MaxTokens:     8192,
+			ContextWindow: 131072,
+			QualityScore:  0.92,
+			CostPerToken:  0.000004,
+			Tags:          []string{"premium", "frontier", "qwen"},
 		},
 		"x-ai/grok-2": {
 			DisplayName:   "Grok 2 (xAI)",

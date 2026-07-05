@@ -10,8 +10,8 @@ import (
 
 	"gaiol/internal/auth"
 	"gaiol/internal/database"
-	orchestratorv1 "gaiol/internal/gaiol/orchestratorcontract/v1"
 	"gaiol/internal/models"
+	"gaiol/internal/orchestration"
 )
 
 const RateLimitPerMin = 60
@@ -26,8 +26,7 @@ type Deps struct {
 	AuthDisabled bool
 	AuthAPI      *auth.AuthAPI
 
-	TSOrchestrator         *orchestratorv1.Client
-	TSOrchestratorDelegate bool
+	Orchestrator *orchestration.Service
 
 	AllowedOrigins map[string]struct{}
 	LogLevel       string
@@ -130,6 +129,7 @@ func Register(mux *http.ServeMux, d *Deps) {
 		mux.Handle("/api/activity", cors(http.HandlerFunc(d.noAuthHandleActivity)))
 		mux.Handle("/api/settings/preferences", cors(http.HandlerFunc(d.noAuthHandlePreferences)))
 		mux.Handle("/api/settings/gaiol-key/ensure", cors(http.HandlerFunc(d.noAuthHandleEnsureGAIOLKey)))
+		mux.Handle("/api/setup/status", cors(http.HandlerFunc(d.handleSetupStatus)))
 	} else {
 		reqAuth := auth.AuthMiddleware(d.DB)
 		mux.Handle("/api/query", cors(reqAuth(http.HandlerFunc(d.handleQuery))))
@@ -152,9 +152,15 @@ func Register(mux *http.ServeMux, d *Deps) {
 		mux.Handle("/api/activity", cors(reqAuth(http.HandlerFunc(d.handleActivity))))
 		mux.Handle("/api/settings/preferences", cors(reqAuth(http.HandlerFunc(d.handlePreferences))))
 		mux.Handle("/api/settings/gaiol-key/ensure", cors(reqAuth(http.HandlerFunc(d.handleEnsureGAIOLKey))))
+		mux.Handle("/api/setup/status", cors(reqAuth(http.HandlerFunc(d.handleSetupStatus))))
 	}
 
 	mux.Handle("/v1/chat", cors(http.HandlerFunc(d.handleV1Chat)))
+	mux.Handle("/v1/orchestrate", cors(http.HandlerFunc(d.handleV1Orchestrate)))
+	mux.Handle("/v1/trust", cors(http.HandlerFunc(d.handleOrchestrationTrustProxy)))
+	mux.Handle("/v1/traces", cors(http.HandlerFunc(d.handleOrchestrationTraceIDsProxy)))
+	mux.Handle("/v1/traces/", cors(http.HandlerFunc(d.handleOrchestrationTraceProxy)))
+	mux.Handle("/v1/eval/contains", cors(http.HandlerFunc(d.handleOrchestrationEvalContainsProxy)))
 
 	// Paper benchmark results (static dashboard + JSON artifacts from scripts/benchmark/results/)
 	mux.Handle("/benchmark", cors(http.HandlerFunc(serveBenchmarkDashboard)))

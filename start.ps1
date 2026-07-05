@@ -1,5 +1,7 @@
 # GAIOL Web Server Start Script
-# This script starts the GAIOL web server with proper environment configuration
+# Prefer the unified stack (Go + orchestrator, one inference path):
+#   .\scripts\dev\start-relay.ps1
+# This script starts Go only — chat requires the TS orchestrator (see docs/LOCAL-DEV-STACK.md).
 
 param(
     [switch]$Build,

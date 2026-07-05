@@ -13,10 +13,10 @@ import (
 
 	"gaiol/internal/auth"
 	"gaiol/internal/database"
-	orchestratorv1 "gaiol/internal/gaiol/orchestratorcontract/v1"
 	"gaiol/internal/httpserver"
 	"gaiol/internal/models"
 	"gaiol/internal/models/adapters"
+	"gaiol/internal/orchestration"
 
 
 	"github.com/joho/godotenv"
@@ -108,15 +108,8 @@ func main() {
 	deps.Router = models.NewModelRouter(deps.Registry, deps.Tracker)
 	log.Println("Model router initialized")
 
-	if tsURL := strings.TrimSpace(os.Getenv("GAIOL_TS_ORCHESTRATOR_URL")); tsURL != "" {
-		deps.TSOrchestrator = orchestratorv1.NewClient(tsURL)
-		deps.TSOrchestratorDelegate = envBool("GAIOL_USE_TS_ORCHESTRATOR")
-		if deps.TSOrchestratorDelegate {
-			log.Printf("TS orchestrator delegation enabled (GAIOL_TS_ORCHESTRATOR_URL=%s)", tsURL)
-		} else {
-			log.Printf("TS orchestrator client configured but delegation off; set GAIOL_USE_TS_ORCHESTRATOR=1 to route /api/query/smart through it")
-		}
-	}
+	deps.Orchestrator = orchestration.NewService()
+	log.Println("Go orchestrator initialized (in-process)")
 
 	mux := http.NewServeMux()
 	httpserver.Register(mux, deps)

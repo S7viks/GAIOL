@@ -141,6 +141,10 @@ func (a *OpenAICompatibleAdapter) GenerateText(ctx context.Context, modelName st
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set(a.authHeader, a.authValue())
+	if a.providerKey == "openrouter" {
+		httpReq.Header.Set("HTTP-Referer", "https://gaiol.app")
+		httpReq.Header.Set("X-Title", "GAIOL")
+	}
 
 	start := time.Now()
 	resp, err := a.client.Do(httpReq)
@@ -172,8 +176,13 @@ func (a *OpenAICompatibleAdapter) GenerateText(ctx context.Context, modelName st
 		out = parsed.Choices[0].Message.Content
 	}
 	tokens := 0
+	var meta map[string]interface{}
 	if parsed.Usage != nil {
 		tokens = parsed.Usage.TotalTokens
+		meta = map[string]interface{}{
+			"prompt_tokens":     parsed.Usage.PromptTokens,
+			"completion_tokens": parsed.Usage.CompletionTokens,
+		}
 	}
 
 	correlationID := ""
@@ -200,6 +209,7 @@ func (a *OpenAICompatibleAdapter) GenerateText(ctx context.Context, modelName st
 			ProcessingMs: int(time.Since(start).Milliseconds()),
 			Quality:      0.75,
 			ModelUsed:    modelName,
+			Metadata:     meta,
 		},
 	}, nil
 }

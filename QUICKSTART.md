@@ -51,9 +51,18 @@ Run the database migrations (see [docs/database-setup.md](docs/database-setup.md
 
 ---
 
-## Step 3: Start the Server
+## Step 3: Start the stack (one inference path)
 
-**Option A: Using Go (Recommended)**
+**Recommended — one command (Go API + optional Vite dashboard):**
+
+```powershell
+.\scripts\dev\start-relay.ps1 -Dashboard
+```
+
+Chat runs through the **in-process Go orchestrator** (no separate Node service).
+
+**Option A: Go only**
+
 ```bash
 go run cmd/web-server/main.go
 ```
@@ -102,14 +111,13 @@ http://localhost:8080
 
 You should see the GAIOL chat interface!
 
-### React dashboard (Vite) + TS orchestrator
+### React dashboard (Vite)
 
 For the developer UI in `dashboard/` (Chat, Trace, Trust, Models, Metrics, …):
 
-1. Start TS orchestrator: `cd orchestrator && npm install && npm run dev:api` (listens on `8787` by default).
-2. In the project root `.env`, set `GAIOL_TS_ORCHESTRATOR_URL=http://127.0.0.1:8787` and `GAIOL_USE_TS_ORCHESTRATOR=1` (and `GAIOL_DISABLE_AUTH=1` for simplest local mode).
-3. Start Go: `go run ./cmd/web-server` (port 8080).
-4. Start Vite: `cd dashboard && npm install && npm run dev` → open **`http://localhost:5173/`** (app base path is `/`).
+1. Start Go: `go run ./cmd/web-server` (port 8080), or `.\scripts\dev\start-relay.ps1 -Dashboard`.
+2. For simplest local mode without Supabase: set `GAIOL_DISABLE_AUTH=1` in `.env`.
+3. Open **`http://localhost:5173/`** when using Vite dev server, or **`http://localhost:8080/`** when serving the built SPA from Go.
 
 Details: [docs/LOCAL-DEV-STACK.md](docs/LOCAL-DEV-STACK.md) and [docs/DASHBOARD.md](docs/DASHBOARD.md).
 
@@ -157,12 +165,10 @@ Details: [docs/LOCAL-DEV-STACK.md](docs/LOCAL-DEV-STACK.md) and [docs/DASHBOARD.
 3. Run migrations (see [docs/database-setup.md](docs/database-setup.md))
 4. Restart the server
 
-### Configure Reasoning Engine
+### Configure Orchestration
 
-Edit `internal/reasoning/engine.go` to customize:
-- Beam search width
-- Consensus strategy
-- Auto-selected models
+Orchestration (beam width, consensus mode, domain) is tuned with `GAIOL_TS_*` environment variables on the Go server;
+see [docs/FEATURE-FLAGS.md](docs/FEATURE-FLAGS.md). Orchestration runs in-process in the Go web server (`internal/orchestration/`).
 
 ### Explore the API
 

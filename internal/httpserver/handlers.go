@@ -18,11 +18,9 @@ import (
 	"gaiol/internal/apijson"
 	"gaiol/internal/auth"
 	"gaiol/internal/database"
-	"gaiol/internal/gaiol/modelresolve"
 	"gaiol/internal/keys"
 	"gaiol/internal/models"
-	"gaiol/internal/models/adapters"
-	"gaiol/internal/uaip"
+	"gaiol/internal/orchestration/llm"
 )
 
 const maxJSONBodyBytes = 1 << 20
@@ -288,12 +286,18 @@ func (d *Deps) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	orchestratorConfigured := d.Orchestrator != nil
+	orchestratorReachable := d.Orchestrator != nil
+
 	health := map[string]interface{}{
-		"status":        "healthy",
-		"models":        d.Registry.Count(),
-		"version":       "1.0.0",
-		"time":          time.Now().Format(time.RFC3339),
-		"auth_disabled": d.AuthDisabled,
+		"status":                  "healthy",
+		"models":                  d.Registry.Count(),
+		"version":                 "1.0.0",
+		"time":                    time.Now().Format(time.RFC3339),
+		"auth_disabled":           d.AuthDisabled,
+		"inference_mode":          "orchestrator_only",
+		"orchestrator_configured": orchestratorConfigured,
+		"orchestrator_reachable":  orchestratorReachable,
 	}
 
 	dbPayload := map[string]interface{}{
@@ -312,6 +316,12 @@ func (d *Deps) handleHealth(w http.ResponseWriter, r *http.Request) {
 		dbPayload["reachable"] = false
 	}
 	health["database"] = dbPayload
+	health["orchestration"] = map[string]interface{}{
+		"beam_width":      beamWidthFromEnv(),
+		"consensus_mode":  consensusModeFromEnv(),
+		"domain":          orchestratorDomainFromEnv(),
+		"explore_paths":   explorePathsDefaultOn(),
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(health)
@@ -405,14 +415,18 @@ func logUsageToAPIQueries(db *database.Client, tenant database.TenantContext, mo
 	}
 	row := map[string]interface{}{
 		"tenant_id":          tenant.TenantID,
-		"organization_id":    tenant.OrgID,
 		"user_id":            tenant.UserID,
 		"model_id":           modelID,
 		"tokens_used":        tokensUsed,
 		"cost":               cost,
 		"processing_time_ms": processingMs,
 		"success":            success,
-		"error_message":      errMsg,
+	}
+	if strings.TrimSpace(tenant.OrgID) != "" {
+		row["organization_id"] = tenant.OrgID
+	}
+	if strings.TrimSpace(errMsg) != "" {
+		row["error_message"] = errMsg
 	}
 	if gaiolKeyID != "" {
 		row["gaiol_api_key_id"] = gaiolKeyID
@@ -425,268 +439,31 @@ func logUsageToAPIQueries(db *database.Client, tenant database.TenantContext, mo
 	return nil
 }
 
-// buildRegistryFromKeys builds a model d.Registry and d.Router from tenant provider keys (openrouter, huggingface, google).
-// Returns (nil, nil) if no keys are present. Caller must not use env provider keys for tenant inference.
-func buildRegistryFromKeys(providerKeys map[string]string, perfTracker *models.PerformanceTracker) (*models.Registry, *models.ModelRouter) {
-	var openRouter, hf, ollama models.ModelAdapter
-	if k := providerKeys["openrouter"]; k != "" {
-		openRouter = adapters.NewOpenRouterAdapter("", k)
-	}
-	if k := providerKeys["huggingface"]; k != "" {
-		hf = adapters.NewHuggingFaceAdapter("", k)
-	}
-	// Ollama: optional local; skip when building from tenant keys (tenant uses cloud keys only unless we add local later)
-	ollama = nil
-	reg := models.NewRegistry(openRouter, hf, ollama)
-	if k := providerKeys["google"]; k != "" {
-		reg.AddGeminiModels(adapters.NewGeminiAdapter(k))
-	}
-	if reg.Count() == 0 {
-		return nil, nil
-	}
-	return reg, models.NewModelRouter(reg, perfTracker)
-}
-
-// buildTenantRegistry builds a d.Registry/d.Router for a tenant from:
-// - legacy provider keys (provider_api_keys): openrouter, huggingface, google
-// - custom providers (tenant_providers): openai-compatible endpoints
-// - tenant models (tenant_models): explicit model ids for routing
-func buildTenantRegistry(ctx context.Context, db *database.Client, tenantID string, perfTracker *models.PerformanceTracker) (*models.Registry, *models.ModelRouter, error) {
-	if db == nil || db.Client == nil || strings.TrimSpace(tenantID) == "" {
-		return nil, nil, fmt.Errorf("database + tenant_id are required")
-	}
-
-	legacyKeys, err := keys.LoadProviderKeysForTenant(ctx, db, tenantID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	var openRouterAdapter models.ModelAdapter
-	var hfAdapter models.ModelAdapter
-	var geminiAdapter models.ModelAdapter
-
-	if k := legacyKeys["openrouter"]; k != "" {
-		openRouterAdapter = adapters.NewOpenRouterAdapter("", k)
-	}
-	if k := legacyKeys["huggingface"]; k != "" {
-		hfAdapter = adapters.NewHuggingFaceAdapter("", k)
-	}
-	if k := legacyKeys["google"]; k != "" {
-		geminiAdapter = adapters.NewGeminiAdapter(k)
-	}
-
-	reg := models.NewEmptyRegistry()
-
-	adapterByProvider := map[string]models.ModelAdapter{}
-	if openRouterAdapter != nil {
-		adapterByProvider["openrouter"] = openRouterAdapter
-	}
-	if hfAdapter != nil {
-		adapterByProvider["huggingface"] = hfAdapter
-	}
-	if geminiAdapter != nil {
-		adapterByProvider["google"] = geminiAdapter
-		adapterByProvider["gemini"] = geminiAdapter
-	}
-
-	customProviders, err := keys.LoadCustomProvidersForTenant(ctx, db, tenantID)
-	if err != nil {
-		return nil, nil, err
-	}
-	for pk, cfg := range customProviders {
-		switch strings.TrimSpace(strings.ToLower(cfg.ProviderType)) {
-		case "", "openai_compatible":
-			adapterByProvider[pk] = adapters.NewOpenAICompatibleAdapter(pk, cfg.BaseURL, cfg.AuthHeader, cfg.AuthScheme, cfg.APIKey)
-		case "anthropic_messages":
-			adapterByProvider[pk] = adapters.NewAnthropicAdapter(pk, cfg.BaseURL, cfg.APIKey)
-		default:
-			continue
-		}
-	}
-
-	tenantModels, err := keys.LoadTenantModelsForTenant(ctx, db, tenantID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	// If no tenant_models rows exist, attempt to register default_model_id (if set) so
-	// a tenant can be functional with minimal config.
-	if len(tenantModels) == 0 {
-		if s, _ := db.GetTenantSettings(ctx, tenantID); s != nil && strings.TrimSpace(s.DefaultModelID) != "" {
-			parts := strings.SplitN(strings.TrimSpace(s.DefaultModelID), ":", 2)
-			if len(parts) == 2 {
-				tenantModels = append(tenantModels, keys.TenantModelRow{
-					ProviderKey:   parts[0],
-					ModelID:       parts[1],
-					DisplayName:   "",
-					QualityScore:  0.75,
-					CostPerToken:  0.0,
-					ContextWindow: 0,
-					MaxTokens:     0,
-					Tags:          []string{"default"},
-					IsActive:      true,
-				})
-			}
-		}
-	}
-
-	for _, m := range tenantModels {
-		pk := strings.TrimSpace(strings.ToLower(m.ProviderKey))
-		if pk == "" || strings.TrimSpace(m.ModelID) == "" || !m.IsActive {
-			continue
-		}
-
-		adapter := adapterByProvider[pk]
-		if adapter == nil {
-			continue
-		}
-
-		regProvider := pk
-		idPrefix := pk
-		if pk == "google" || pk == "gemini" {
-			regProvider = "gemini"
-			idPrefix = "gemini"
-		}
-
-		id := models.ModelID(idPrefix + ":" + m.ModelID)
-		display := strings.TrimSpace(m.DisplayName)
-		if display == "" {
-			display = m.ModelID
-		}
-		_ = reg.RegisterModel(models.ModelMetadata{
-			ID:            id,
-			Provider:      regProvider,
-			ModelName:     m.ModelID,
-			DisplayName:   display,
-			CostInfo:      models.CostInfo{CostPerToken: m.CostPerToken},
-			Capabilities:  []models.TaskType{models.TaskGenerate, models.TaskAnalyze, models.TaskSummarize, models.TaskTransform, models.TaskCode},
-			QualityScore:  m.QualityScore,
-			ContextWindow: m.ContextWindow,
-			MaxTokens:     m.MaxTokens,
-			Tags:          m.Tags,
-			Adapter:       adapter,
-		})
-	}
-
-	if reg.Count() == 0 {
-		return nil, nil, nil
-	}
-	return reg, models.NewModelRouter(reg, perfTracker), nil
-}
-
 // ============================================================================
 // Query Handlers
 // ============================================================================
+//
+// Go builds no model registry for user chat. All inference goes through
+// orchestrateUserRequest (internal/httpserver/orchestrate_user.go), which resolves
+// tenant credentials via keys.ResolveTenantCredentials and proxies one
+// POST /v1/orchestrate to the TS orchestrator.
 
+// handleQuery is deprecated: direct multi-model fan-out from Go was removed with the
+// single-path refactor. All user inference goes through POST /api/query/smart.
 func (d *Deps) handleQuery(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var req struct {
-		Prompt      string   `json:"prompt"`
-		Models      []string `json:"models"`
-		MaxTokens   int      `json:"max_tokens"`
-		Temperature float64  `json:"temperature"`
-	}
-
-	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
-		return
-	}
-
-	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
-		return
-	}
-
-	if req.MaxTokens == 0 {
-		req.MaxTokens = 300
-	}
-	if req.Temperature == 0 {
-		req.Temperature = 0.7
-	}
-	req.MaxTokens = clampChatMaxTokens(req.MaxTokens)
-	req.Temperature = clampTemperature(req.Temperature)
-
-	// Execute queries for all requested models
-	ctx := r.Context()
-	results := make([]map[string]interface{}, 0, len(req.Models))
-
-	for _, modelID := range req.Models {
-		modelMeta, err := modelresolve.LookupRegisteredModel(d.Registry, modelID)
-		if err != nil {
-			results = append(results, map[string]interface{}{
-				"model_id": modelID,
-				"error":    "Model not found: " + err.Error(),
-			})
-			continue
-		}
-
-		uaipReq := &uaip.UAIPRequest{
-			UAIP: uaip.UAIPHeader{
-				Version:   uaip.ProtocolVersion,
-				MessageID: fmt.Sprintf("query-%d", time.Now().UnixNano()),
-				Timestamp: time.Now(),
-			},
-			Payload: uaip.Payload{
-				Input: uaip.PayloadInput{
-					Data:   req.Prompt,
-					Format: "text",
-				},
-				OutputRequirements: uaip.OutputRequirements{
-					MaxTokens:   req.MaxTokens,
-					Temperature: req.Temperature,
-				},
-			},
-		}
-
-		resp, err := modelMeta.Adapter.GenerateText(ctx, modelMeta.ModelName, uaipReq)
-		if err != nil {
-			results = append(results, map[string]interface{}{
-				"model_id": modelID,
-				"error":    err.Error(),
-			})
-			continue
-		}
-
-		results = append(results, map[string]interface{}{
-			"model_id":    modelID,
-			"response":    resp.Result.Data,
-			"tokens_used": resp.Result.TokensUsed,
-			"cost":        resp.Metadata.CostInfo.TotalCost,
-			"latency_ms":  resp.Result.ProcessingMs,
-			"quality":     resp.Result.Quality,
-		})
-	}
-
-	response := map[string]interface{}{
-		"results": results,
-		"count":   len(results),
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	apijson.WriteError(w, http.StatusGone,
+		"POST /api/query was removed. Use POST /api/query/smart (all chat runs through the orchestrator).",
+		"endpoint_removed")
 }
 
+// handleQuerySmart is the dashboard chat entry (JWT auth). It funnels into
+// orchestrateUserRequest — the single inference path shared with POST /v1/chat.
 func (d *Deps) handleQuerySmart(w http.ResponseWriter, r *http.Request) {
-	// Add panic recovery with proper error response
-	defer func() {
-		if err := recover(); err != nil {
-			log.Printf("❌ PANIC in handleQuerySmart: %v", err)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":   fmt.Sprintf("Internal server error: %v", err),
-				"success": false,
-			})
-		}
-	}()
-
-	log.Printf("📥 handleQuerySmart called - using Reasoning Engine")
-
 	if r.Method != "POST" {
-		log.Printf("❌ Invalid method: %s", r.Method)
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
@@ -703,15 +480,12 @@ func (d *Deps) handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("📋 Query request - Prompt: %q, Strategy: %s, Task: %s", req.Prompt, req.Strategy, req.Task)
-
 	if req.Prompt == "" {
-		log.Printf("❌ Empty prompt")
 		http.Error(w, "prompt is required", http.StatusBadRequest)
 		return
 	}
 	if req.MaxTokens == 0 {
-		req.MaxTokens = 300
+		req.MaxTokens = 2048
 	}
 	if req.Temperature == 0 {
 		req.Temperature = 0.7
@@ -731,16 +505,22 @@ func (d *Deps) handleQuerySmart(w http.ResponseWriter, r *http.Request) {
 		tenantCtx, _ = database.GetTenantFromContext(r.Context())
 	}
 
-	if d.tryQuerySmartViaTSOrchestrator(w, r, req.Prompt, req.Task, req.Strategy, req.MaxTokens, req.Temperature, tenantCtx) {
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(w).Encode(map[string]interface{}{"error": "TS Orchestrator is unavailable or disabled. Reasoning requires the TS Orchestrator.", "success": false})
+	d.orchestrateUserRequest(w, r, userChatRequest{
+		Prompt:      req.Prompt,
+		Task:        req.Task,
+		Strategy:    req.Strategy,
+		MaxTokens:   req.MaxTokens,
+		Temperature: req.Temperature,
+	}, tenantCtx, "")
 }
 func canManageKeys(tc database.TenantContext) bool {
-	// Empty role (e.g. from RPC that does not return role) treated as owner for backward compatibility
-	return tc.Role == "admin" || tc.Role == "owner" || tc.Role == ""
+	// Explicit admin/owner roles (org admins, legacy empty role).
+	if tc.Role == "admin" || tc.Role == "owner" || tc.Role == "" {
+		return true
+	}
+	// Single-tenant product: the user who owns their personal tenant (tenant_id == user_id)
+	// must manage provider keys during onboarding even when profile.role defaults to "user".
+	return tc.TenantID != "" && tc.TenantID == tc.UserID
 }
 
 // mergeAutoProvisionGAIOLJSON appends one-shot gaiol_api_key fields when the tenant had no GAIOL keys.
@@ -776,30 +556,87 @@ func (d *Deps) handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		custom, err := keys.ListCustomProviders(r.Context(), d.DB, tenantCtx.TenantID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		for _, c := range custom {
+			if strings.EqualFold(c.ProviderKey, "ollama") {
+				hint := strings.TrimSpace(c.BaseURL)
+				if hint == "" {
+					hint = "localhost"
+				}
+				list = append(list, keys.ProviderKeyRow{
+					ID:       c.ID,
+					Provider: "ollama",
+					KeyHint:  hint,
+					IsActive: c.IsActive,
+					CreatedAt: c.CreatedAt,
+					UpdatedAt: c.UpdatedAt,
+				})
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	case http.MethodPost:
 		if !canManageKeys(tenantCtx) {
-			http.Error(w, "Forbidden: only admins can manage provider keys", http.StatusForbidden)
+			apijson.WriteError(w, http.StatusForbidden, "Forbidden: only admins can manage provider keys", "forbidden")
 			return
 		}
 		var body struct {
 			Provider string `json:"provider"`
 			APIKey   string `json:"api_key"`
+			BaseURL  string `json:"base_url"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &body) {
 			return
 		}
-		hint, err := keys.StoreProviderKey(r.Context(), d.DB, tenantCtx.TenantID, body.Provider, body.APIKey)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		providerNorm := keys.NormalizeProviderID(body.Provider)
+		if providerNorm == "" {
+			apijson.WriteError(w, http.StatusBadRequest, "invalid provider", "invalid_provider")
 			return
 		}
-		_ = d.DB.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_added", map[string]interface{}{"provider": body.Provider})
+		var hint string
+		var storeErr error
+		if keys.IsLocalProvider(providerNorm) {
+			hint, storeErr = keys.StoreOllamaProvider(r.Context(), d.DB, tenantCtx.TenantID, body.BaseURL)
+		} else {
+			if strings.TrimSpace(body.APIKey) == "" {
+				apijson.WriteError(w, http.StatusBadRequest, "api_key is required", "api_key_required")
+				return
+			}
+			hint, storeErr = keys.StoreProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm, body.APIKey)
+		}
+		if storeErr != nil {
+			apijson.WriteError(w, http.StatusBadRequest, storeErr.Error(), "provider_key_store_failed")
+			return
+		}
+		if !keys.IsLocalProvider(providerNorm) && !envBool("GAIOL_SKIP_PROVIDER_KEY_PING") {
+			kind, baseURL, ok := keys.CredentialMetaForBuiltin(providerNorm)
+			if !ok {
+				kind = keys.CredentialKindOpenAICompatible
+			}
+			if strings.TrimSpace(body.BaseURL) != "" {
+				baseURL = strings.TrimSpace(body.BaseURL)
+			}
+			if pingModel := keys.PingModelForProvider(providerNorm); pingModel != "" {
+				if err := llm.PingProvider(r.Context(), providerNorm, kind, strings.TrimSpace(body.APIKey), baseURL, pingModel); err != nil {
+					_ = keys.DeleteProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm)
+					apijson.WriteError(w, http.StatusBadRequest,
+						fmt.Sprintf("Provider key failed validation for %s: %v. Check the key is correct and has API access, then try again.", providerNorm, err),
+						"provider_key_invalid")
+					return
+				}
+			}
+		}
+		if err := keys.EnsureDefaultModelsForProvider(r.Context(), d.DB, tenantCtx.TenantID, providerNorm); err != nil {
+			log.Printf("EnsureDefaultModelsForProvider (%s): %v", providerNorm, err)
+		}
+		_ = d.DB.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_added", map[string]interface{}{"provider": providerNorm})
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		resp := map[string]interface{}{"key_hint": hint}
+		resp := map[string]interface{}{"key_hint": hint, "provider": providerNorm}
 		d.mergeAutoProvisionGAIOLJSON(r.Context(), tenantCtx, "provider_api_key", resp)
 		json.NewEncoder(w).Encode(resp)
 	case http.MethodDelete:
@@ -812,11 +649,22 @@ func (d *Deps) handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "provider query required", http.StatusBadRequest)
 			return
 		}
-		if err := keys.DeleteProviderKey(r.Context(), d.DB, tenantCtx.TenantID, provider); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+		providerNorm := keys.NormalizeProviderID(provider)
+		if providerNorm == "" {
+			http.Error(w, "invalid provider", http.StatusBadRequest)
 			return
 		}
-		_ = d.DB.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_removed", map[string]interface{}{"provider": provider})
+		var delErr error
+		if keys.IsLocalProvider(providerNorm) {
+			delErr = keys.DeleteCustomProvider(r.Context(), d.DB, tenantCtx.TenantID, "ollama")
+		} else {
+			delErr = keys.DeleteProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm)
+		}
+		if delErr != nil {
+			http.Error(w, delErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		_ = d.DB.InsertAuditLog(r.Context(), tenantCtx.TenantID, tenantCtx.UserID, "provider_key_removed", map[string]interface{}{"provider": providerNorm})
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -1056,19 +904,19 @@ func (d *Deps) handlePreferences(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		out := map[string]interface{}{"budget_limit": nil, "default_model_id": "", "strategy": "balanced"}
+		out := map[string]interface{}{"budget_limit": nil, "strategy": "balanced"}
 		if s != nil {
 			out["budget_limit"] = s.BudgetLimit
-			out["default_model_id"] = s.DefaultModelID
 			out["strategy"] = s.Strategy
 		}
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(out)
 	case http.MethodPut:
 		var body struct {
-			BudgetLimit    *float64 `json:"budget_limit"`
-			DefaultModelID string   `json:"default_model_id"`
-			Strategy       string   `json:"strategy"`
+			BudgetLimit *float64 `json:"budget_limit"`
+			Strategy    string   `json:"strategy"`
+			// Legacy: empty string clears any stored default_model_id from older installs.
+			DefaultModelID *string `json:"default_model_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
@@ -1084,7 +932,9 @@ func (d *Deps) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		if body.Strategy != "" {
 			s.Strategy = body.Strategy
 		}
-		s.DefaultModelID = body.DefaultModelID
+		if body.DefaultModelID != nil {
+			s.DefaultModelID = *body.DefaultModelID
+		}
 		if err := d.DB.UpsertTenantSettings(r.Context(), s); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -1315,18 +1165,24 @@ func (d *Deps) handleTenantModels(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
-	tenantReg, _, buildErr := buildTenantRegistry(r.Context(), d.DB, tenantCtx.TenantID, d.Tracker)
-	if buildErr != nil {
-		http.Error(w, buildErr.Error(), http.StatusInternalServerError)
+	creds, err := keys.ResolveTenantCredentials(r.Context(), d.DB, tenantCtx.TenantID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if tenantReg == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"models": []interface{}{}, "count": 0})
-		return
+	list := make([]map[string]interface{}, 0, len(creds.Models))
+	for _, m := range creds.Models {
+		display := m.DisplayName
+		if display == "" {
+			display = m.ModelID
+		}
+		list = append(list, map[string]interface{}{
+			"id":           m.Provider + ":" + m.ModelID,
+			"provider":     m.Provider,
+			"model_name":   m.ModelID,
+			"display_name": display,
+		})
 	}
-	models := tenantReg.ListModels()
-	list := convertModelsToJSON(models)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"models": list, "count": len(list)})
 }
@@ -1335,12 +1191,19 @@ func (d *Deps) handleTenantModels(w http.ResponseWriter, r *http.Request) {
 // Return shapes expected by the frontend so dashboard and models pages render.
 
 func (d *Deps) noAuthHandleProviderKeys(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]interface{}{})
+	case http.MethodPost, http.MethodDelete:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Provider key management is not available in local no-auth mode. Set keys in .env (e.g. OPENROUTER_API_KEY, GEMINI_API_KEY) and restart, or enable Supabase auth.",
+		})
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{})
 }
 
 func (d *Deps) noAuthHandleCustomProviders(w http.ResponseWriter, r *http.Request) {
@@ -1372,12 +1235,19 @@ func (d *Deps) noAuthHandleTenantModelsSettings(w http.ResponseWriter, r *http.R
 }
 
 func (d *Deps) noAuthHandleGAIOLKeys(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode([]interface{}{})
+	case http.MethodPost:
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "GAIOL API keys are not available in local no-auth mode. Enable Supabase auth and database, or use env provider keys for /v1/chat in dev.",
+		})
+	default:
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]interface{}{})
 }
 
 func (d *Deps) noAuthHandleGAIOLKeysID(w http.ResponseWriter, r *http.Request) {
@@ -1467,9 +1337,8 @@ func (d *Deps) noAuthHandlePreferences(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"budget_limit":     nil,
-			"default_model_id": "",
-			"strategy":         "balanced",
+			"budget_limit": nil,
+			"strategy":     "balanced",
 		})
 	case http.MethodPut:
 		w.Header().Set("Content-Type", "application/json")
@@ -1580,12 +1449,8 @@ func (d *Deps) handleV1Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	d.RateLimitMu.Unlock()
 
-	v1Start := time.Now()
 	var body struct {
 		Prompt      string  `json:"prompt"`
-		ProviderKey string  `json:"provider_key"`
-		ModelID     string  `json:"model_id"`
-		Model       string  `json:"model"`
 		Strategy    string  `json:"strategy"`
 		Task        string  `json:"task"`
 		MaxTokens   int     `json:"max_tokens"`
@@ -1604,86 +1469,25 @@ func (d *Deps) handleV1Chat(w http.ResponseWriter, r *http.Request) {
 		body.MaxTokens = 2048
 	}
 
-	tenantReg, tenantRouter, buildErr := buildTenantRegistry(r.Context(), d.DB, tenantID, d.Tracker)
-	if buildErr != nil {
-		apijson.WriteError(w, http.StatusInternalServerError, "Failed to load tenant models/providers", "tenant_registry_error")
-		return
-	}
-	if tenantReg == nil || tenantRouter == nil {
-		apijson.WriteError(w, http.StatusBadRequest, "No tenant models/providers configured for this tenant. Add built-in provider keys (Dashboard > Models) or register custom providers/models via /api/settings/providers and /api/settings/models.", "no_tenant_models")
-		return
-	}
-
-	requestedModel := strings.TrimSpace(body.ModelID)
-	if requestedModel == "" {
-		requestedModel = strings.TrimSpace(body.Model)
-	}
-	if requestedModel != "" && !strings.Contains(requestedModel, ":") && strings.TrimSpace(body.ProviderKey) != "" {
-		requestedModel = strings.TrimSpace(strings.ToLower(body.ProviderKey)) + ":" + requestedModel
-	}
-
-	// If a specific model is requested, run a direct single-model call (no reasoning engine).
-	if requestedModel != "" {
-		meta, err := tenantReg.GetModel(models.ModelID(requestedModel))
-		if err != nil {
-			apijson.WriteError(w, http.StatusBadRequest, "Model not registered for this tenant. Add it in Settings > Models.", "model_not_found")
-			return
-		}
-		uaipReq := &uaip.UAIPRequest{
-			UAIP: uaip.UAIPHeader{
-				Version:   uaip.ProtocolVersion,
-				MessageID: fmt.Sprintf("v1-%d", time.Now().UnixNano()),
-				Timestamp: time.Now(),
-			},
-			Payload: uaip.Payload{
-				Input: uaip.PayloadInput{Data: body.Prompt, Format: "text"},
-				OutputRequirements: uaip.OutputRequirements{
-					MaxTokens:   body.MaxTokens,
-					Temperature: body.Temperature,
-				},
-			},
-		}
-		resp, err := meta.Adapter.GenerateText(r.Context(), meta.ModelName, uaipReq)
-		if err != nil {
-			log.Printf("v1/chat tenant_id=%s model=%s latency_ms=%d success=false error=%s", tenantID, requestedModel, time.Since(v1Start).Milliseconds(), err.Error())
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error(), "success": false})
-			return
-		}
-		tenantCtx := database.TenantContext{TenantID: tenantID, UserID: "", OrgID: ""}
-		_ = logUsageToAPIQueries(d.DB, tenantCtx, requestedModel, resp.Result.TokensUsed, 0.0, resp.Result.ProcessingMs, true, "", gaiolKeyID)
-		log.Printf("v1/chat tenant_id=%s model=%s latency_ms=%d success=true", tenantID, requestedModel, time.Since(v1Start).Milliseconds())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"result":     resp.Result.Data,
-			"cost":       0.0,
-			"session_id": "",
-			"model_id":   requestedModel,
-		})
-		return
-	}
-
-	if d.tryQuerySmartViaTSOrchestrator(w, r, body.Prompt, body.Task, body.Strategy, body.MaxTokens, body.Temperature, database.TenantContext{TenantID: tenantID, UserID: "", OrgID: ""}) {
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(w).Encode(map[string]interface{}{"error": "TS Orchestrator is unavailable or disabled. Reasoning requires the TS Orchestrator.", "success": false})
+	// Same single inference path as POST /api/query/smart: tenant credentials -> TS orchestrator.
+	d.orchestrateUserRequest(w, r, userChatRequest{
+		Prompt:      body.Prompt,
+		Task:        body.Task,
+		Strategy:    body.Strategy,
+		MaxTokens:   body.MaxTokens,
+		Temperature: body.Temperature,
+	}, database.TenantContext{TenantID: tenantID, UserID: "", OrgID: ""}, gaiolKeyID)
 }
+// handleV1ChatLocal serves /v1/chat in no-auth local mode: same orchestrate path,
+// credentials omitted so the orchestrator uses its env keys (dev-only exception).
 func (d *Deps) handleV1ChatLocal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		apijson.WriteError(w, http.StatusMethodNotAllowed, "Method not allowed", "method_not_allowed")
 		return
 	}
 
-	v1Start := time.Now()
 	var body struct {
 		Prompt      string  `json:"prompt"`
-		ProviderKey string  `json:"provider_key"`
-		ModelID     string  `json:"model_id"`
-		Model       string  `json:"model"`
 		Strategy    string  `json:"strategy"`
 		Task        string  `json:"task"`
 		MaxTokens   int     `json:"max_tokens"`
@@ -1702,148 +1506,47 @@ func (d *Deps) handleV1ChatLocal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestedModel := strings.TrimSpace(body.ModelID)
-	if requestedModel == "" {
-		requestedModel = strings.TrimSpace(body.Model)
-	}
-	if requestedModel != "" && !strings.Contains(requestedModel, ":") && strings.TrimSpace(body.ProviderKey) != "" {
-		requestedModel = strings.TrimSpace(strings.ToLower(body.ProviderKey)) + ":" + requestedModel
-	}
-
-	if requestedModel != "" {
-		meta, err := d.Registry.GetModel(models.ModelID(requestedModel))
-		if err != nil {
-			http.Error(w, "Model not available. Add provider keys in Settings (Dashboard > Models), or in no-auth mode add keys to .env.", http.StatusBadRequest)
-			return
-		}
-
-		uaipReq := &uaip.UAIPRequest{
-			UAIP: uaip.UAIPHeader{
-				Version:   uaip.ProtocolVersion,
-				MessageID: fmt.Sprintf("v1-local-%d", time.Now().UnixNano()),
-				Timestamp: time.Now(),
-			},
-			Payload: uaip.Payload{
-				Input: uaip.PayloadInput{Data: body.Prompt, Format: "text"},
-				OutputRequirements: uaip.OutputRequirements{
-					MaxTokens:   body.MaxTokens,
-					Temperature: body.Temperature,
-				},
-			},
-		}
-
-		resp, err := meta.Adapter.GenerateText(r.Context(), meta.ModelName, uaipReq)
-		if err != nil {
-			log.Printf("v1/chat local model=%s latency_ms=%d success=false error=%s", requestedModel, time.Since(v1Start).Milliseconds(), err.Error())
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]interface{}{"error": err.Error(), "success": false})
-			return
-		}
-
-		log.Printf("v1/chat local model=%s latency_ms=%d success=true", requestedModel, time.Since(v1Start).Milliseconds())
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"result":     resp.Result.Data,
-			"cost":       resp.Metadata.CostInfo.TotalCost,
-			"session_id": "",
-			"model_id":   requestedModel,
-		})
-		return
-	}
-
-	if d.tryQuerySmartViaTSOrchestrator(w, r, body.Prompt, body.Task, body.Strategy, body.MaxTokens, body.Temperature, database.TenantContext{}) {
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(w).Encode(map[string]interface{}{"error": "TS Orchestrator is unavailable or disabled. Reasoning requires the TS Orchestrator.", "success": false})
+	d.orchestrateUserRequest(w, r, userChatRequest{
+		Prompt:      body.Prompt,
+		Task:        body.Task,
+		Strategy:    body.Strategy,
+		MaxTokens:   body.MaxTokens,
+		Temperature: body.Temperature,
+	}, database.TenantContext{}, "")
 }
+// handleQueryModel is deprecated: single-model direct calls from Go were removed with
+// the single-path refactor. All user inference goes through POST /api/query/smart.
 func (d *Deps) handleQueryModel(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var req struct {
-		Prompt      string  `json:"prompt"`
-		ModelID     string  `json:"model_id"`
-		MaxTokens   int     `json:"max_tokens"`
-		Temperature float64 `json:"temperature"`
-	}
-
-	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
-		return
-	}
-
-	if req.Prompt == "" {
-		http.Error(w, "prompt is required", http.StatusBadRequest)
-		return
-	}
-
-	if req.ModelID == "" {
-		http.Error(w, "model_id is required", http.StatusBadRequest)
-		return
-	}
-
-	if req.MaxTokens == 0 {
-		req.MaxTokens = 200
-	}
-	if req.Temperature == 0 {
-		req.Temperature = 0.7
-	}
-	req.MaxTokens = clampChatMaxTokens(req.MaxTokens)
-	req.Temperature = clampTemperature(req.Temperature)
-
-	modelMeta, err := modelresolve.LookupRegisteredModel(d.Registry, req.ModelID)
-	if err != nil {
-		http.Error(w, "Model not found: "+err.Error(), http.StatusNotFound)
-		return
-	}
-
-	uaipReq := &uaip.UAIPRequest{
-		UAIP: uaip.UAIPHeader{
-			Version:   uaip.ProtocolVersion,
-			MessageID: fmt.Sprintf("model-%d", time.Now().UnixNano()),
-			Timestamp: time.Now(),
-		},
-		Payload: uaip.Payload{
-			Input: uaip.PayloadInput{
-				Data:   req.Prompt,
-				Format: "text",
-			},
-			OutputRequirements: uaip.OutputRequirements{
-				MaxTokens:   req.MaxTokens,
-				Temperature: req.Temperature,
-			},
-		},
-	}
-
-	ctx := r.Context()
-	resp, err := modelMeta.Adapter.GenerateText(ctx, modelMeta.ModelName, uaipReq)
-	if err != nil {
-		http.Error(w, "Query execution failed: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	response := map[string]interface{}{
-		"model_id":    req.ModelID,
-		"model_name":  modelMeta.DisplayName,
-		"response":    resp.Result.Data,
-		"tokens_used": resp.Result.TokensUsed,
-		"cost":        resp.Metadata.CostInfo.TotalCost,
-		"latency_ms":  resp.Result.ProcessingMs,
-		"quality":     resp.Result.Quality,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	apijson.WriteError(w, http.StatusGone,
+		"POST /api/query/model was removed. Use POST /api/query/smart (all chat runs through the orchestrator).",
+		"endpoint_removed")
 }
 
 // ============================================================================
 // Authentication Handlers
 // ============================================================================
+
+func writeAuthError(w http.ResponseWriter, err error, defaultStatus int) {
+	msg := err.Error()
+	status := defaultStatus
+	code := "auth_error"
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "no such host") ||
+		strings.Contains(lower, "connection refused") ||
+		strings.Contains(lower, "failed to send request") ||
+		strings.Contains(lower, "dial tcp") ||
+		strings.Contains(lower, "i/o timeout") ||
+		strings.Contains(lower, "context deadline exceeded") {
+		status = http.StatusServiceUnavailable
+		code = "supabase_unreachable"
+		msg = "Cannot reach Supabase. Check SUPABASE_URL in .env and your network, or set GAIOL_DISABLE_AUTH=1 for local development without signup."
+	}
+	apijson.WriteError(w, status, msg, code)
+}
 
 func (d *Deps) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
@@ -1870,14 +1573,17 @@ func (d *Deps) handleSignUp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req auth.SignUpRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Email) == "" || strings.TrimSpace(req.Password) == "" {
+		apijson.WriteError(w, http.StatusBadRequest, "email and password are required", "validation_error")
 		return
 	}
 
 	resp, err := d.AuthAPI.SignUp(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAuthError(w, err, http.StatusBadRequest)
 		return
 	}
 
@@ -1907,8 +1613,11 @@ func (d *Deps) handleRecoverPassword(w http.ResponseWriter, r *http.Request) {
 		Email      string `json:"email"`
 		RedirectTo string `json:"redirect_to"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Email == "" {
-		http.Error(w, "Invalid JSON or missing email", http.StatusBadRequest)
+	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Email) == "" {
+		apijson.WriteError(w, http.StatusBadRequest, "email is required", "validation_error")
 		return
 	}
 	redirectTo := req.RedirectTo
@@ -1916,7 +1625,7 @@ func (d *Deps) handleRecoverPassword(w http.ResponseWriter, r *http.Request) {
 		redirectTo = "/reset-password"
 	}
 	if err := d.AuthAPI.RecoverPassword(r.Context(), req.Email, redirectTo); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAuthError(w, err, http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1943,12 +1652,15 @@ func (d *Deps) handleUpdatePassword(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Password == "" {
-		http.Error(w, "Invalid JSON or missing password", http.StatusBadRequest)
+	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Password) == "" {
+		apijson.WriteError(w, http.StatusBadRequest, "password is required", "validation_error")
 		return
 	}
 	if err := d.AuthAPI.UpdatePassword(r.Context(), token, req.Password); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAuthError(w, err, http.StatusBadRequest)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -1980,14 +1692,17 @@ func (d *Deps) handleSignIn(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req auth.SignInRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Email) == "" || strings.TrimSpace(req.Password) == "" {
+		apijson.WriteError(w, http.StatusBadRequest, "email and password are required", "validation_error")
 		return
 	}
 
 	resp, err := d.AuthAPI.SignIn(r.Context(), req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeAuthError(w, err, http.StatusUnauthorized)
 		return
 	}
 
@@ -2033,7 +1748,7 @@ func (d *Deps) handleSignOut(w http.ResponseWriter, r *http.Request) {
 
 	err = d.AuthAPI.SignOut(r.Context(), strings.TrimSpace(parts[1]))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeAuthError(w, err, http.StatusInternalServerError)
 		return
 	}
 
@@ -2147,14 +1862,17 @@ func (d *Deps) handleRefreshToken(w http.ResponseWriter, r *http.Request) {
 		RefreshToken string `json:"refresh_token"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+	if !apijson.DecodeJSON(w, r, maxJSONBodyBytes, &req) {
+		return
+	}
+	if strings.TrimSpace(req.RefreshToken) == "" {
+		apijson.WriteError(w, http.StatusBadRequest, "refresh_token is required", "validation_error")
 		return
 	}
 
 	session, err := d.AuthAPI.RefreshToken(r.Context(), req.RefreshToken)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
+		writeAuthError(w, err, http.StatusUnauthorized)
 		return
 	}
 

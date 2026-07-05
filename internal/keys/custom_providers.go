@@ -19,7 +19,11 @@ var reservedProviderKeys = map[string]struct{}{
 	"huggingface": {},
 	"google":      {},
 	"gemini":      {},
-	"ollama":      {},
+	"openai":      {},
+	"anthropic":   {},
+	"claude":      {},
+	"groq":        {},
+	"together":    {},
 }
 
 type CustomProviderRow struct {

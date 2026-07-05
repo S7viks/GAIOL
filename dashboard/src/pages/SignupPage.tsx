@@ -15,6 +15,7 @@ export function SignupPage() {
   const [loading, setLoading] = useState(false)
   const [authDisabled, setAuthDisabled] = useState(false)
   const [apiUnreachable, setApiUnreachable] = useState(false)
+  const [databaseUnreachable, setDatabaseUnreachable] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -24,6 +25,7 @@ export function SignupPage() {
         if (cancelled) return
         setApiUnreachable(!h.ok)
         setAuthDisabled(h.authDisabled)
+        setDatabaseUnreachable(h.ok && !h.authDisabled && !h.databaseReachable)
         if (h.authDisabled) {
           navigate('/home', { replace: true })
           return
@@ -85,6 +87,12 @@ export function SignupPage() {
                 rebuild with <code>VITE_API_BASE</code> set to your API origin (see <code>.env.example</code>).
               </p>
             )}
+            {databaseUnreachable && (
+              <p className="error-message" role="alert">
+                Supabase is not reachable from the API. Check <code>SUPABASE_URL</code> in your root <code>.env</code>,
+                or set <code>GAIOL_DISABLE_AUTH=1</code> for local development without signup.
+              </p>
+            )}
           </div>
           <div className="term-screen" aria-hidden="true">
             <div className="line comment">new tenant registration</div>
@@ -133,7 +141,7 @@ export function SignupPage() {
             <p className="term-muted-small">
               By creating an account you agree to the <Link to="/terms">Terms of Service</Link>.
             </p>
-            <button type="submit" className="btn-primary btn-full" disabled={loading || authDisabled || apiUnreachable}>
+            <button type="submit" className="btn-primary btn-full" disabled={loading || authDisabled || apiUnreachable || databaseUnreachable}>
               {loading ? 'Creating…' : 'Create account'}
             </button>
             <div className="auth-divider">
@@ -143,8 +151,23 @@ export function SignupPage() {
               Sign in instead
             </Link>
           </form>
-          {error && <div className="error-message">{error}</div>}
-          {info && <div className="term-message">{info}</div>}
+          {error && (
+            <div className="error-message" role="alert">
+              {error}
+              {error.includes('already exists') && (
+                <>
+                  {' '}
+                  <Link to="/login">Sign in</Link>
+                </>
+              )}
+            </div>
+          )}
+          {info && (
+            <div className="term-message" role="status">
+              {info}{' '}
+              <Link to="/login">Go to sign in</Link>
+            </div>
+          )}
         </div>
       </div>
     </div>

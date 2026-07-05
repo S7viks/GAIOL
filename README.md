@@ -2,6 +2,7 @@
 
 **One API key for all your AI models.** GAIOL routes requests across your connected providers (OpenRouter, Gemini, HuggingFace) so you don't overpay or underuse.
 
+- **Active product plan:** [docs/RELAY-UNIFIED-PLAN.md](docs/RELAY-UNIFIED-PLAN.md) (one pipeline, HCC, merged Go + TS orchestrator) · [Product vision](docs/RELAY-PRODUCT-VISION.md) · [Fable build prompt](docs/FABLE-BUILD-PROMPT.md)
 - **Quick start:** [QUICKSTART.md](QUICKSTART.md)
 - **Local dashboard + orchestrator:** [docs/LOCAL-DEV-STACK.md](docs/LOCAL-DEV-STACK.md), [docs/DASHBOARD.md](docs/DASHBOARD.md), [docs/FEATURE-FLAGS.md](docs/FEATURE-FLAGS.md)
 - **Deploy online:** [docs/RUNBOOK.md](docs/RUNBOOK.md#get-it-online-recommended-path) (Railway, Fly.io, or Render)

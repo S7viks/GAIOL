@@ -1,15 +1,8 @@
-# Print local three-process dev commands (run each in its own terminal from repo root).
+# Local stack helper — use start-relay.ps1 for one-command startup.
 $root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
+Write-Host "GAIOL local stack (Go API + in-process orchestrator)"
+Write-Host "  .\scripts\dev\start-relay.ps1"
+Write-Host "  .\scripts\dev\start-relay.ps1 -Dashboard   # + Vite on :5173"
+Write-Host ""
+Write-Host "Manual: docs/LOCAL-DEV-STACK.md"
 Write-Host "Repo: $root"
-Write-Host ""
-Write-Host "Terminal 1 - TS orchestrator:"
-Write-Host "  cd `"$root\orchestrator`"; npm install; npm run dev:api"
-Write-Host ""
-Write-Host "Terminal 2 - Go API (set .env: GAIOL_TS_ORCHESTRATOR_URL=http://127.0.0.1:8787 GAIOL_USE_TS_ORCHESTRATOR=1 GAIOL_DISABLE_AUTH=1):"
-Write-Host "  cd `"$root`"; go run ./cmd/web-server"
-Write-Host ""
-Write-Host "Terminal 3 - Vite dashboard:"
-Write-Host "  cd `"$root\dashboard`"; npm install; npm run dev"
-Write-Host ""
-Write-Host "Open http://localhost:5173/dashboard/  (after: cd dashboard; npm run build for Go-only serving use http://localhost:8080/dashboard/)"
-Write-Host "Docs: docs/LOCAL-DEV-STACK.md"

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 
 	"gaiol/internal/database"
 )
@@ -18,11 +20,28 @@ type AuthAPI struct {
 	HTTPClient  *http.Client
 }
 
+// resolveAuthAPIKey returns the Supabase anon/publishable key for Auth REST calls.
+// PostgREST uses the service role; Auth signup/signin should use the anon key.
+func resolveAuthAPIKey(db *database.Client) string {
+	for _, envKey := range []string{
+		"SUPABASE_ANON_KEY",
+		"NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY",
+	} {
+		if k := strings.TrimSpace(os.Getenv(envKey)); k != "" {
+			return k
+		}
+	}
+	if db != nil && strings.TrimSpace(db.APIKey) != "" {
+		return db.APIKey
+	}
+	return ""
+}
+
 // NewAuthAPI creates a new AuthAPI instance
 func NewAuthAPI(db *database.Client) *AuthAPI {
 	return &AuthAPI{
 		SupabaseURL: db.URL,
-		APIKey:      db.APIKey,
+		APIKey:      resolveAuthAPIKey(db),
 		HTTPClient:  &http.Client{},
 	}
 }

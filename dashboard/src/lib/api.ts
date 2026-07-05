@@ -30,6 +30,23 @@ export class ApiError extends Error {
   }
 }
 
+function errorMessageFromBody(data: unknown, statusText: string): string {
+  if (typeof data === 'string') {
+    const trimmed = data.trim()
+    if (trimmed) return trimmed
+  }
+  const o = data as Record<string, unknown> | null
+  if (o && typeof o.error === 'string' && o.error) return o.error
+  if (o && typeof o.message === 'string' && o.message) return o.message
+  return statusText
+}
+
+function errorCodeFromBody(data: unknown): string | undefined {
+  if (typeof data === 'string') return undefined
+  const o = data as Record<string, unknown> | null
+  return o && typeof o.code === 'string' ? o.code : undefined
+}
+
 export async function apiGet(path: string): Promise<unknown> {
   const res = await fetch(apiUrl(path), {
     credentials: 'include',
@@ -45,13 +62,7 @@ export async function apiGet(path: string): Promise<unknown> {
     }
   }
   if (!res.ok) {
-    const o = data as Record<string, unknown> | null
-    const msg =
-      (o && typeof o.error === 'string' && o.error) ||
-      (o && typeof o.message === 'string' && o.message) ||
-      res.statusText
-    const code = o && typeof o.code === 'string' ? o.code : undefined
-    throw new ApiError(msg, res.status, code)
+    throw new ApiError(errorMessageFromBody(data, res.statusText), res.status, errorCodeFromBody(data))
   }
   return data
 }
@@ -73,13 +84,7 @@ export async function apiPut(path: string, body: unknown): Promise<unknown> {
     }
   }
   if (!res.ok) {
-    const o = data as Record<string, unknown> | null
-    const msg =
-      (o && typeof o.error === 'string' && o.error) ||
-      (o && typeof o.message === 'string' && o.message) ||
-      res.statusText
-    const code = o && typeof o.code === 'string' ? o.code : undefined
-    throw new ApiError(msg, res.status, code)
+    throw new ApiError(errorMessageFromBody(data, res.statusText), res.status, errorCodeFromBody(data))
   }
   return data
 }
@@ -101,13 +106,7 @@ export async function apiPost(path: string, body: unknown): Promise<unknown> {
     }
   }
   if (!res.ok) {
-    const o = data as Record<string, unknown> | null
-    const msg =
-      (o && typeof o.error === 'string' && o.error) ||
-      (o && typeof o.message === 'string' && o.message) ||
-      res.statusText
-    const code = o && typeof o.code === 'string' ? o.code : undefined
-    throw new ApiError(msg, res.status, code)
+    throw new ApiError(errorMessageFromBody(data, res.statusText), res.status, errorCodeFromBody(data))
   }
   return data
 }
@@ -128,14 +127,7 @@ export async function apiDelete(path: string): Promise<void> {
       data = text
     }
   }
-  const o = data as Record<string, unknown> | null
-  const msg =
-    (o && typeof o.error === 'string' && o.error) ||
-    (o && typeof o.message === 'string' && o.message) ||
-    text ||
-    res.statusText
-  const code = o && typeof o.code === 'string' ? o.code : undefined
-  throw new ApiError(msg, res.status, code)
+  throw new ApiError(errorMessageFromBody(data, text || res.statusText), res.status, errorCodeFromBody(data))
 }
 
 export async function fetchHealth(): Promise<boolean> {
@@ -147,13 +139,66 @@ export async function fetchHealth(): Promise<boolean> {
   }
 }
 
-export async function fetchHealthBody(): Promise<{ ok: boolean; authDisabled: boolean }> {
+export async function fetchHealthBody(): Promise<{
+  ok: boolean
+  authDisabled: boolean
+  databaseReachable: boolean
+  databasePingError?: string
+  orchestration?: {
+    beam_width?: number
+    consensus_mode?: string
+    domain?: string
+    explore_paths?: boolean
+  }
+}> {
   try {
     const res = await fetch(apiUrl('/health'), { credentials: 'include' })
-    if (!res.ok) return { ok: false, authDisabled: false }
-    const data = (await res.json()) as { auth_disabled?: boolean }
-    return { ok: true, authDisabled: !!data.auth_disabled }
+    if (!res.ok) return { ok: false, authDisabled: false, databaseReachable: false }
+    const data = (await res.json()) as {
+      auth_disabled?: boolean
+      database?: { reachable?: boolean; ping_error?: string }
+      orchestration?: {
+        beam_width?: number
+        consensus_mode?: string
+        domain?: string
+        explore_paths?: boolean
+      }
+    }
+    return {
+      ok: true,
+      authDisabled: !!data.auth_disabled,
+      databaseReachable: data.database?.reachable !== false,
+      databasePingError: data.database?.ping_error,
+      orchestration: data.orchestration,
+    }
   } catch {
-    return { ok: false, authDisabled: false }
+    return { ok: false, authDisabled: false, databaseReachable: false }
   }
+}
+
+/** Download a binary/text export with auth headers (e.g. usage CSV). */
+export async function apiDownload(path: string, filename: string): Promise<void> {
+  const res = await fetch(apiUrl(path), {
+    credentials: 'include',
+    headers: authHeaders({}),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    let msg = res.statusText
+    try {
+      const o = JSON.parse(text) as Record<string, unknown>
+      if (typeof o.error === 'string') msg = o.error
+      else if (typeof o.message === 'string') msg = o.message
+    } catch {
+      if (text) msg = text
+    }
+    throw new ApiError(msg, res.status)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
