@@ -85,8 +85,10 @@ export function LoginPage() {
             <p>Authenticate to access AI model orchestration.</p>
             {apiUnreachable && (
               <p className="error-message" role="alert">
-                Cannot reach the API ({apiUrl('/health')}). If the dashboard is on a different host than the Go server,
-                rebuild with <code>VITE_API_BASE</code> set to your API origin (see <code>.env.example</code>).
+                Cannot reach the Go API at <code>{apiUrl('/health')}</code>. Start it with{' '}
+                <code>go run cmd/web-server/main.go</code> or <code>.\scripts\dev\start-relay.ps1 -Dashboard</code>, then
+                refresh. If the dashboard is on a different host (e.g. Vercel), rebuild with{' '}
+                <code>VITE_API_BASE</code> set to your API origin (see root <code>.env.example</code>).
               </p>
             )}
           </div>
