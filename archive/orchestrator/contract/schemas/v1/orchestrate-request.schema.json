@@ -42,6 +42,48 @@
     },
     "explore_paths": { "type": "boolean" },
     "beam_width": { "type": "integer", "minimum": 1 },
-    "consensus_mode": { "type": "string", "enum": ["uniform", "static", "abtc"] }
+    "consensus_mode": { "type": "string", "enum": ["uniform", "static", "abtc"] },
+    "abtc_decay": { "type": "number", "minimum": 0, "maximum": 1, "description": "ABTC temporal decay (λ = 1 − abtc_decay); overrides server default for this request." },
+    "credentials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "providers"],
+      "description": "Tenant provider pool for this request. When present, the orchestrator must use only these credentials (no env fallback). Secrets: never log.",
+      "properties": {
+        "schema_version": { "type": "string", "const": "1" },
+        "providers": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "kind"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "kind": {
+                "type": "string",
+                "enum": ["openai_compatible", "anthropic_messages", "gemini", "ollama"]
+              },
+              "api_key": { "type": "string" },
+              "base_url": { "type": "string" }
+            }
+          }
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["provider", "model_id"],
+            "properties": {
+              "provider": { "type": "string", "minLength": 1 },
+              "model_id": { "type": "string", "minLength": 1 },
+              "display_name": { "type": "string" }
+            }
+          }
+        },
+        "default_model_id": { "type": "string" }
+      }
+    }
   }
 }

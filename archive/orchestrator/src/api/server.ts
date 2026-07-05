@@ -12,6 +12,10 @@ import {
 import { FileTrustRepository } from "../persistence/file-trust-store.js";
 import { OrchestratorPipeline } from "../orchestration/pipeline.js";
 import { buildOrchestratorRegistry } from "../config/registry-from-env.js";
+import {
+  buildDecomposerFromCredentials,
+  buildRuntimeFromCredentials,
+} from "../config/registry-from-credentials.js";
 import { loadOrchestratorPort } from "../config/env.js";
 import type { OrchestrationRequest } from "../domain/task.js";
 import {
@@ -44,29 +48,48 @@ export function buildServer() {
   const adapters = buildAdaptersFromEnv();
   const decomposer = buildDecomposerFromEnv(process.env, adapters, registry);
 
+  const config = {
+    consensusMode,
+    beamWidth,
+    maxParallelCalls: 3,
+    maxCostUsdPerRequest: 5,
+    abtc: {
+      decay: 0.15,
+      strength: 2,
+      participantStrength: 1.2,
+      consensusTrustExponent: 1.5,
+    },
+    retry: { retries: 2, baseDelayMs: 50 },
+  };
+
+  // Shared state (trust, traces, sessions, evaluations) persists across requests;
+  // registry/adapters/decomposer are swapped per request when credentials arrive.
+  const sharedDeps = { trust, traces, sessions, evaluations, logger, config };
+
+  // Env-backed pipeline: local dev fallback for requests WITHOUT a credentials payload.
   const orchestrator = new OrchestratorPipeline({
     decomposer,
     registry,
     adapters,
-    trust,
-    traces,
-    sessions,
-    evaluations,
-    logger,
-    config: {
-      consensusMode,
-      beamWidth,
-      maxParallelCalls: 3,
-      maxCostUsdPerRequest: 5,
-      abtc: {
-        decay: 0.15,
-        strength: 2,
-        participantStrength: 1.2,
-        consensusTrustExponent: 1.5,
-      },
-      retry: { retries: 2, baseDelayMs: 50 },
-    },
+    ...sharedDeps,
   });
+
+  /**
+   * Tenant-credential pipeline: the production path. When a request carries
+   * credentials, only that provider pool is used — env keys are ignored.
+   */
+  function pipelineForCredentials(
+    credentials: import("../contract/v1/wire-types.js").RequestCredentialsV1,
+  ): { pipeline: OrchestratorPipeline; modelCount: number } {
+    const runtime = buildRuntimeFromCredentials(credentials);
+    const pipeline = new OrchestratorPipeline({
+      decomposer: buildDecomposerFromCredentials(runtime),
+      registry: runtime.registry,
+      adapters: runtime.adapters,
+      ...sharedDeps,
+    });
+    return { pipeline, modelCount: runtime.registry.length };
+  }
 
   const app = Fastify({ logger: false });
 
@@ -170,7 +193,22 @@ export function buildServer() {
       const configOverride = modePartial || decayPartial
         ? { ...(modePartial ?? {}), ...(decayPartial ?? {}) }
         : undefined;
-      const result = await orchestrator.run(
+
+      // Credentials present -> per-request registry only (tenant BYOK, prod path).
+      // Credentials absent -> env-backed pipeline (local GAIOL_DISABLE_AUTH dev only).
+      let pipeline = orchestrator;
+      if (v1.credentials) {
+        const built = pipelineForCredentials(v1.credentials);
+        if (built.modelCount === 0) {
+          return reply.code(400).send({
+            error: "no_models_for_credentials",
+            message: "Credentials payload resolved to zero routable models.",
+          });
+        }
+        pipeline = built.pipeline;
+      }
+
+      const result = await pipeline.run(
         orchestrationReq,
         configOverride ? { configOverride } : undefined,
       );

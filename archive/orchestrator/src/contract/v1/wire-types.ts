@@ -30,6 +30,33 @@ export interface TaskConstraintsV1 {
   max_output_tokens?: number;
 }
 
+export type CredentialKindV1 = "openai_compatible" | "anthropic_messages" | "gemini" | "ollama";
+
+/** One tenant provider credential. api_key is a secret: never log or echo it. */
+export interface ProviderCredentialV1 {
+  id: string;
+  kind: CredentialKindV1;
+  api_key?: string;
+  base_url?: string;
+}
+
+export interface CredentialModelV1 {
+  provider: string;
+  model_id: string;
+  display_name?: string;
+}
+
+/**
+ * Tenant provider pool for a single orchestrate call. When present, the
+ * orchestrator must use only these credentials (env provider keys ignored).
+ */
+export interface RequestCredentialsV1 {
+  schema_version: "1";
+  providers: ProviderCredentialV1[];
+  models?: CredentialModelV1[];
+  default_model_id?: string;
+}
+
 export interface OrchestrateRequestV1 {
   schema_version: "1.0";
   trace_id: string;
@@ -44,6 +71,7 @@ export interface OrchestrateRequestV1 {
   consensus_mode?: ConsensusModeV1;
   /** ABTC temporal decay (λ = 1 − abtc_decay). Overrides server default for this request only. */
   abtc_decay?: number;
+  credentials?: RequestCredentialsV1;
 }
 
 export interface BetaDistributionV1 {
