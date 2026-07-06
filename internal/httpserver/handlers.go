@@ -322,6 +322,7 @@ func (d *Deps) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"domain":          orchestratorDomainFromEnv(),
 		"explore_paths":   explorePathsDefaultOn(),
 	}
+	health["encryption_key_configured"] = keys.EncryptionKeyConfigured()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(health)
@@ -523,6 +524,24 @@ func canManageKeys(tc database.TenantContext) bool {
 	return tc.TenantID != "" && tc.TenantID == tc.UserID
 }
 
+func writeProviderKeyStoreError(w http.ResponseWriter, err error) {
+	msg := err.Error()
+	lower := strings.ToLower(msg)
+	if strings.Contains(lower, "row-level security") || strings.Contains(lower, "42501") {
+		apijson.WriteError(w, http.StatusServiceUnavailable,
+			"Server cannot write provider keys: set SUPABASE_SERVICE_ROLE_KEY on the API host (Render → Environment). The Go server uses the service role for PostgREST; the anon key is blocked by RLS on provider_api_keys.",
+			"supabase_rls_service_role_required")
+		return
+	}
+	if strings.Contains(msg, "GAIOL_ENCRYPTION_KEY") {
+		apijson.WriteError(w, http.StatusServiceUnavailable,
+			"Server misconfiguration: GAIOL_ENCRYPTION_KEY is not set on the API host. Generate one with: openssl rand -hex 32, add it to the server environment (e.g. Render → Environment), and redeploy.",
+			"encryption_key_missing")
+		return
+	}
+	apijson.WriteError(w, http.StatusBadRequest, msg, "provider_key_store_failed")
+}
+
 // mergeAutoProvisionGAIOLJSON appends one-shot gaiol_api_key fields when the tenant had no GAIOL keys.
 // Logs and swallows errors so provider save still succeeds.
 func (d *Deps) mergeAutoProvisionGAIOLJSON(ctx context.Context, tenantCtx database.TenantContext, source string, resp map[string]interface{}) {
@@ -599,17 +618,19 @@ func (d *Deps) handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 		}
 		var hint string
 		var storeErr error
+		var savedAPIKey string
 		if keys.IsLocalProvider(providerNorm) {
 			hint, storeErr = keys.StoreOllamaProvider(r.Context(), d.DB, tenantCtx.TenantID, body.BaseURL)
 		} else {
-			if strings.TrimSpace(body.APIKey) == "" {
+			savedAPIKey = keys.NormalizeAPIKey(body.APIKey)
+			if savedAPIKey == "" {
 				apijson.WriteError(w, http.StatusBadRequest, "api_key is required", "api_key_required")
 				return
 			}
-			hint, storeErr = keys.StoreProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm, body.APIKey)
+			hint, storeErr = keys.StoreProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm, savedAPIKey)
 		}
 		if storeErr != nil {
-			apijson.WriteError(w, http.StatusBadRequest, storeErr.Error(), "provider_key_store_failed")
+			writeProviderKeyStoreError(w, storeErr)
 			return
 		}
 		if !keys.IsLocalProvider(providerNorm) && !envBool("GAIOL_SKIP_PROVIDER_KEY_PING") {
@@ -621,7 +642,7 @@ func (d *Deps) handleProviderKeys(w http.ResponseWriter, r *http.Request) {
 				baseURL = strings.TrimSpace(body.BaseURL)
 			}
 			if pingModel := keys.PingModelForProvider(providerNorm); pingModel != "" {
-				if err := llm.PingProvider(r.Context(), providerNorm, kind, strings.TrimSpace(body.APIKey), baseURL, pingModel); err != nil {
+				if err := llm.PingProvider(r.Context(), providerNorm, kind, savedAPIKey, baseURL, pingModel); err != nil {
 					_ = keys.DeleteProviderKey(r.Context(), d.DB, tenantCtx.TenantID, providerNorm)
 					apijson.WriteError(w, http.StatusBadRequest,
 						fmt.Sprintf("Provider key failed validation for %s: %v. Check the key is correct and has API access, then try again.", providerNorm, err),
@@ -904,22 +925,29 @@ func (d *Deps) handlePreferences(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		out := map[string]interface{}{"budget_limit": nil, "strategy": "balanced"}
-		if s != nil {
-			out["budget_limit"] = s.BudgetLimit
-			out["strategy"] = s.Strategy
-		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(out)
+		json.NewEncoder(w).Encode(preferencesResponseFromSettings(s))
 	case http.MethodPut:
 		var body struct {
-			BudgetLimit *float64 `json:"budget_limit"`
-			Strategy    string   `json:"strategy"`
+			BudgetLimit   *float64 `json:"budget_limit"`
+			Strategy      string   `json:"strategy"`
+			BeamWidth     *int     `json:"beam_width"`
+			ConsensusMode *string  `json:"consensus_mode"`
+			Domain        *string  `json:"domain"`
+			ExplorePaths  *bool    `json:"explore_paths"`
 			// Legacy: empty string clears any stored default_model_id from older installs.
 			DefaultModelID *string `json:"default_model_id,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+		if body.BeamWidth != nil && *body.BeamWidth < 1 {
+			http.Error(w, "beam_width must be at least 1", http.StatusBadRequest)
+			return
+		}
+		if body.ConsensusMode != nil && normalizeConsensusMode(*body.ConsensusMode) == "" {
+			http.Error(w, "consensus_mode must be abtc, uniform, or static", http.StatusBadRequest)
 			return
 		}
 		s, _ := d.DB.GetTenantSettings(r.Context(), tenantCtx.TenantID)
@@ -931,6 +959,24 @@ func (d *Deps) handlePreferences(w http.ResponseWriter, r *http.Request) {
 		}
 		if body.Strategy != "" {
 			s.Strategy = body.Strategy
+		}
+		if body.BeamWidth != nil {
+			s.BeamWidth = body.BeamWidth
+		}
+		if body.ConsensusMode != nil {
+			mode := normalizeConsensusMode(*body.ConsensusMode)
+			s.ConsensusMode = &mode
+		}
+		if body.Domain != nil {
+			dom := strings.TrimSpace(*body.Domain)
+			if dom == "" {
+				s.Domain = nil
+			} else {
+				s.Domain = &dom
+			}
+		}
+		if body.ExplorePaths != nil {
+			s.ExplorePaths = body.ExplorePaths
 		}
 		if body.DefaultModelID != nil {
 			s.DefaultModelID = *body.DefaultModelID
@@ -1336,10 +1382,7 @@ func (d *Deps) noAuthHandlePreferences(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"budget_limit": nil,
-			"strategy":     "balanced",
-		})
+		json.NewEncoder(w).Encode(preferencesResponseFromSettings(nil))
 	case http.MethodPut:
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"success": true})

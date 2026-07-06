@@ -139,11 +139,14 @@ export async function fetchHealth(): Promise<boolean> {
   }
 }
 
-export async function fetchHealthBody(): Promise<{
+const healthFail = { ok: false as const, authDisabled: false, databaseReachable: false }
+
+async function fetchHealthOnce(): Promise<{
   ok: boolean
   authDisabled: boolean
   databaseReachable: boolean
   databasePingError?: string
+  encryptionKeyConfigured?: boolean
   orchestration?: {
     beam_width?: number
     consensus_mode?: string
@@ -151,29 +154,59 @@ export async function fetchHealthBody(): Promise<{
     explore_paths?: boolean
   }
 }> {
-  try {
-    const res = await fetch(apiUrl('/health'), { credentials: 'include' })
-    if (!res.ok) return { ok: false, authDisabled: false, databaseReachable: false }
-    const data = (await res.json()) as {
-      auth_disabled?: boolean
-      database?: { reachable?: boolean; ping_error?: string }
-      orchestration?: {
-        beam_width?: number
-        consensus_mode?: string
-        domain?: string
-        explore_paths?: boolean
-      }
+  const res = await fetch(apiUrl('/health'), { credentials: 'include' })
+  if (!res.ok) {
+    // Render/Fly cold start can return 502/503 before the process is ready.
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new Error(`health ${res.status}`)
     }
-    return {
-      ok: true,
-      authDisabled: !!data.auth_disabled,
-      databaseReachable: data.database?.reachable !== false,
-      databasePingError: data.database?.ping_error,
-      orchestration: data.orchestration,
-    }
-  } catch {
-    return { ok: false, authDisabled: false, databaseReachable: false }
+    return healthFail
   }
+  const data = (await res.json()) as {
+    auth_disabled?: boolean
+    encryption_key_configured?: boolean
+    database?: { reachable?: boolean; ping_error?: string }
+    orchestration?: {
+      beam_width?: number
+      consensus_mode?: string
+      domain?: string
+      explore_paths?: boolean
+    }
+  }
+  return {
+    ok: true,
+    authDisabled: !!data.auth_disabled,
+    databaseReachable: data.database?.reachable !== false,
+    databasePingError: data.database?.ping_error,
+    encryptionKeyConfigured: data.encryption_key_configured,
+    orchestration: data.orchestration,
+  }
+}
+
+export async function fetchHealthBody(): Promise<{
+  ok: boolean
+  authDisabled: boolean
+  databaseReachable: boolean
+  databasePingError?: string
+  encryptionKeyConfigured?: boolean
+  orchestration?: {
+    beam_width?: number
+    consensus_mode?: string
+    domain?: string
+    explore_paths?: boolean
+  }
+}> {
+  // Render free tier can take 30–60s to wake; retry with backoff before showing unreachable.
+  const delays = [0, 3000, 8000, 15000, 25000]
+  for (let i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) await new Promise((r) => setTimeout(r, delays[i]))
+    try {
+      return await fetchHealthOnce()
+    } catch {
+      /* retry — Render free tier cold start */
+    }
+  }
+  return healthFail
 }
 
 /** Download a binary/text export with auth headers (e.g. usage CSV). */

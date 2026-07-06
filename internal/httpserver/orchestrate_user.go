@@ -95,20 +95,21 @@ func (d *Deps) orchestrateUserRequest(
 	defer cancel()
 
 	traceID := uuid.New().String()
-	explore := explorePathsDefaultOn()
+	orch := d.resolveOrchestrationPrefs(r.Context(), tenantCtx.TenantID)
+	explore := orch.ExplorePaths
 	switch strings.ToLower(strings.TrimSpace(in.Strategy)) {
 	case "beam":
 		explore = true
 	}
-	bw := beamWidthFromEnv()
-	consensus := consensusModeFromEnv()
+	bw := orch.BeamWidth
+	consensus := orch.ConsensusMode
 	maxTok := in.MaxTokens
 	tempPtr := in.Temperature
 
 	reqV1 := &orchestratorv1.OrchestrateRequestV1{
 		SchemaVersion: "1.0",
 		TraceID:       traceID,
-		Domain:        orchestratorDomainFromEnv(),
+		Domain:        orch.Domain,
 		TaskKind:      mapTaskKindV1(in.Task),
 		Objective:     in.Prompt,
 		Messages: []orchestratorv1.ChatMessageV1{

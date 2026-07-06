@@ -72,6 +72,9 @@ func pingOpenRouterKey(ctx context.Context, apiKey string) error {
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
 		if msg := openRouterErrorMessage(body); msg != "" {
+			if strings.Contains(strings.ToLower(msg), "missing authentication") {
+				return fmt.Errorf("invalid OpenRouter API key (paste only sk-or-v1-…, not \"Bearer …\"): %s", msg)
+			}
 			return fmt.Errorf("invalid or revoked OpenRouter API key: %s", msg)
 		}
 		return fmt.Errorf("invalid or revoked OpenRouter API key")

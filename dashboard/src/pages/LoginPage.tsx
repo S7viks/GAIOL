@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { fetchAuthSession } from '../lib/auth'
 import { requestPasswordRecovery, signIn } from '../lib/authApi'
 import { fetchHealthBody } from '../lib/api'
-import { apiUrl } from '../lib/apiBase'
+import { ApiUnreachableHelp } from '../components/auth/ApiUnreachableHelp'
 
 export function LoginPage() {
   const navigate = useNavigate()
@@ -83,14 +83,7 @@ export function LoginPage() {
           <div className="auth-header">
             <h1>GAIOL Access Terminal</h1>
             <p>Authenticate to access AI model orchestration.</p>
-            {apiUnreachable && (
-              <p className="error-message" role="alert">
-                Cannot reach the Go API at <code>{apiUrl('/health')}</code>. Start it with{' '}
-                <code>go run cmd/web-server/main.go</code> or <code>.\scripts\dev\start-relay.ps1 -Dashboard</code>, then
-                refresh. If the dashboard is on a different host (e.g. Vercel), rebuild with{' '}
-                <code>VITE_API_BASE</code> set to your API origin (see root <code>.env.example</code>).
-              </p>
-            )}
+            {apiUnreachable && <ApiUnreachableHelp />}
           </div>
           <div className="term-screen" aria-hidden="true">
             <div className="line comment">session: unauthenticated</div>

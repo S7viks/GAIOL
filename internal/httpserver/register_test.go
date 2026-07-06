@@ -364,3 +364,54 @@ func TestCORS_Preflight_OPTIONS_AllowedOrigin(t *testing.T) {
 		t.Fatalf("Access-Control-Allow-Origin %q", got)
 	}
 }
+
+func TestInitConfigFromEnv_AllowedOriginsIncludesRenderExternalURL(t *testing.T) {
+	t.Setenv("ALLOWED_ORIGINS", "https://gaiol.vercel.app")
+	t.Setenv("RENDER_EXTERNAL_URL", "https://gaiol-ab0t.onrender.com")
+	d := &Deps{}
+	d.InitConfigFromEnv()
+	if d.AllowedOrigins == nil {
+		t.Fatal("expected allowlist")
+	}
+	for _, want := range []string{"https://gaiol.vercel.app", "https://gaiol-ab0t.onrender.com"} {
+		if _, ok := d.AllowedOrigins[want]; !ok {
+			t.Fatalf("missing origin %q in %#v", want, d.AllowedOrigins)
+		}
+	}
+}
+
+func TestCORS_RenderOrigin_AllowedWhenInAllowlistViaExternalURL(t *testing.T) {
+	reg := models.NewEmptyRegistry()
+	tracker := models.NewPerformanceTracker(nil)
+	rtr := models.NewModelRouter(reg, tracker)
+	d := &Deps{
+		Registry:     reg,
+		Router:       rtr,
+		Tracker:      tracker,
+		AuthDisabled: true,
+		LogLevel:     "error",
+		AllowedOrigins: map[string]struct{}{
+			"https://gaiol.vercel.app":        {},
+			"https://gaiol-ab0t.onrender.com": {},
+		},
+	}
+	mux := http.NewServeMux()
+	Register(mux, d)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://gaiol-ab0t.onrender.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://gaiol-ab0t.onrender.com" {
+		t.Fatalf("Access-Control-Allow-Origin %q want https://gaiol-ab0t.onrender.com", got)
+	}
+}

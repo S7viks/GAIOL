@@ -13,6 +13,10 @@ type TenantSettings struct {
 	BudgetAlertSentAt *time.Time `json:"budget_alert_sent_at"`
 	DefaultModelID   string     `json:"default_model_id"`
 	Strategy         string     `json:"strategy"`
+	BeamWidth        *int       `json:"beam_width"`
+	ConsensusMode    *string    `json:"consensus_mode"`
+	Domain           *string    `json:"domain"`
+	ExplorePaths     *bool      `json:"explore_paths"`
 	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
@@ -26,11 +30,15 @@ func (c *Client) GetTenantSettings(ctx context.Context, tenantID string) (*Tenan
 		BudgetLimit       *float64   `json:"budget_limit"`
 		BudgetAlertSentAt *time.Time `json:"budget_alert_sent_at"`
 		DefaultModelID    *string    `json:"default_model_id"`
-		Strategy         *string    `json:"strategy"`
-		UpdatedAt        time.Time  `json:"updated_at"`
+		Strategy          *string    `json:"strategy"`
+		BeamWidth         *int       `json:"beam_width"`
+		ConsensusMode     *string    `json:"consensus_mode"`
+		Domain            *string    `json:"domain"`
+		ExplorePaths      *bool      `json:"explore_paths"`
+		UpdatedAt         time.Time  `json:"updated_at"`
 	}
 	_, err := c.From("tenant_settings").
-		Select("tenant_id,budget_limit,budget_alert_sent_at,default_model_id,strategy,updated_at", "", false).
+		Select("tenant_id,budget_limit,budget_alert_sent_at,default_model_id,strategy,beam_width,consensus_mode,domain,explore_paths,updated_at", "", false).
 		Filter("tenant_id", "eq", tenantID).
 		ExecuteTo(&rows)
 	if err != nil || len(rows) == 0 {
@@ -50,6 +58,10 @@ func (c *Client) GetTenantSettings(ctx context.Context, tenantID string) (*Tenan
 	} else {
 		r.Strategy = "balanced"
 	}
+	r.BeamWidth = rows[0].BeamWidth
+	r.ConsensusMode = rows[0].ConsensusMode
+	r.Domain = rows[0].Domain
+	r.ExplorePaths = rows[0].ExplorePaths
 	return r, nil
 }
 
@@ -62,12 +74,16 @@ func (c *Client) UpsertTenantSettings(ctx context.Context, s *TenantSettings) er
 		return fmt.Errorf("tenant_id is required")
 	}
 	row := map[string]interface{}{
-		"tenant_id":           s.TenantID,
-		"budget_limit":        s.BudgetLimit,
+		"tenant_id":            s.TenantID,
+		"budget_limit":         s.BudgetLimit,
 		"budget_alert_sent_at": s.BudgetAlertSentAt,
-		"default_model_id":    nullIfEmpty(s.DefaultModelID),
-		"strategy":            nullIfEmpty(s.Strategy),
-		"updated_at":         time.Now().UTC().Format(time.RFC3339),
+		"default_model_id":     nullIfEmpty(s.DefaultModelID),
+		"strategy":             nullIfEmpty(s.Strategy),
+		"beam_width":           s.BeamWidth,
+		"consensus_mode":       s.ConsensusMode,
+		"domain":               s.Domain,
+		"explore_paths":        s.ExplorePaths,
+		"updated_at":           time.Now().UTC().Format(time.RFC3339),
 	}
 	_, _, err := c.From("tenant_settings").Insert(row, true, "tenant_id", "", "").Execute()
 	if err != nil {

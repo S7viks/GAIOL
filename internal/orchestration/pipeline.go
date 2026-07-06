@@ -96,6 +96,8 @@ func (p *Pipeline) Run(ctx context.Context, req OrchestrationRequest, cfgOverrid
 		if err != nil {
 			return nil, err
 		}
+		calls, failoverRetries := p.expandCallsOnProviderFailure(ctx, req, sub.Description, cfg, plan, calls)
+		totalRetries += failoverRetries
 		for _, c := range calls {
 			if c.Usage != nil && c.Usage.CostUsd != nil {
 				spentUsd += *c.Usage.CostUsd

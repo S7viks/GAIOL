@@ -18,18 +18,16 @@ export function SettingsPage() {
   const toast = useToast()
   const [strategy, setStrategy] = useState('balanced')
   const [budgetLimit, setBudgetLimit] = useState('')
+  const [beamWidth, setBeamWidth] = useState('2')
+  const [consensusMode, setConsensusMode] = useState('abtc')
+  const [domain, setDomain] = useState('general')
+  const [explorePaths, setExplorePaths] = useState(false)
   const [bootstrapped, setBootstrapped] = useState(false)
   const [dataLoading, setDataLoading] = useState(true)
   const [authDisabled, setAuthDisabled] = useState(false)
   const [authenticated, setAuthenticated] = useState(false)
   const [healthUnreachable, setHealthUnreachable] = useState(false)
   const [dbPingHint, setDbPingHint] = useState('')
-  const [orchestrationEnv, setOrchestrationEnv] = useState<{
-    beam_width?: number
-    consensus_mode?: string
-    domain?: string
-    explore_paths?: boolean
-  } | null>(null)
   const [setup, setSetup] = useState<SetupStatus | null>(null)
   const [providerKeys, setProviderKeys] = useState<ProviderKeyRow[]>([])
   const [newProvider, setNewProvider] = useState<string>('openrouter')
@@ -88,7 +86,6 @@ export function SettingsPage() {
           setAuthDisabled(health.authDisabled)
           setHealthUnreachable(!health.authDisabled && health.ok && !health.databaseReachable)
           setDbPingHint(health.databasePingError ?? 'check SUPABASE_URL in .env')
-          setOrchestrationEnv(health.orchestration ?? null)
         }
 
         if (!health.authDisabled) {
@@ -127,6 +124,10 @@ export function SettingsPage() {
           const p = prefsResult.value as PreferencesResponse
           setStrategy(p.strategy ?? 'balanced')
           setBudgetLimit(p.budget_limit != null ? String(p.budget_limit) : '')
+          setBeamWidth(p.beam_width != null ? String(p.beam_width) : '2')
+          setConsensusMode(p.consensus_mode ?? 'abtc')
+          setDomain(p.domain ?? 'general')
+          setExplorePaths(!!p.explore_paths)
         } else if (!cancelled && prefsResult.status === 'rejected') {
           const err = prefsResult.reason
           if (!(err instanceof ApiError && err.status === 401)) {
@@ -176,11 +177,25 @@ export function SettingsPage() {
       toast.error('Budget must be a non-negative number or empty')
       return
     }
+    const bw = Number(beamWidth)
+    if (!Number.isInteger(bw) || bw < 1) {
+      toast.error('Beam width must be a whole number of at least 1')
+      return
+    }
+    const dom = domain.trim()
+    if (!dom) {
+      toast.error('Domain is required')
+      return
+    }
     try {
       await apiPut('/api/settings/preferences', {
         strategy,
         default_model_id: '',
         budget_limit: budget,
+        beam_width: bw,
+        consensus_mode: consensusMode,
+        domain: dom,
+        explore_paths: explorePaths,
       })
       toast.success('Preferences saved')
     } catch (e) {
@@ -365,59 +380,73 @@ export function SettingsPage() {
         </PageAlert>
       )}
 
-      {bootstrapped && orchestrationEnv && (
-        <details className="ui-details page-alert" style={{ marginBottom: 12 }}>
-          <summary>Orchestration (server env)</summary>
-          <div className="ui-details__body">
-            <p className="table-meta" style={{ marginTop: 0 }}>
-              These values come from <code>GAIOL_*</code> in the Go server&apos;s <code>.env</code>. Edit there and restart{' '}
-              <code>go run cmd/web-server/main.go</code> — not in this dashboard.
-            </p>
-            <table className="data-table">
-              <tbody>
-                <tr>
-                  <td>Beam width</td>
-                  <td className="mono">{orchestrationEnv.beam_width ?? '—'}</td>
-                  <td className="mono table-meta">GAIOL_BEAM_WIDTH</td>
-                </tr>
-                <tr>
-                  <td>Consensus</td>
-                  <td className="mono">{orchestrationEnv.consensus_mode ?? '—'}</td>
-                  <td className="mono table-meta">GAIOL_CONSENSUS_MODE</td>
-                </tr>
-                <tr>
-                  <td>Domain</td>
-                  <td className="mono">{orchestrationEnv.domain ?? '—'}</td>
-                  <td className="mono table-meta">GAIOL_DOMAIN</td>
-                </tr>
-                <tr>
-                  <td>Explore paths</td>
-                  <td className="mono">{orchestrationEnv.explore_paths ? 'on' : 'off'}</td>
-                  <td className="mono table-meta">GAIOL_EXPLORE_PATHS</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </details>
-      )}
-
       {dataLoading && bootstrapped && <div className="skeleton skeleton--block" aria-hidden />}
 
-      {bootstrapped && (
+      {bootstrapped && !dataLoading && (
         <PageStack>
           <div className="page-grid page-grid--settings">
             <PageSection
               title="Preferences"
-              subtitle="Routing uses every provider with a saved key and your registered models. Strategy and budget apply to orchestration."
+              subtitle="Routing and orchestration for your account. Saved here and applied to Chat and API requests."
             >
               <div className="form-field">
-                <label htmlFor="strategy">Strategy</label>
-                <input
+                <label htmlFor="strategy">Routing strategy</label>
+                <select
                   id="strategy"
                   value={strategy}
                   onChange={(e) => setStrategy(e.target.value)}
-                  placeholder="balanced"
+                  style={{ width: '100%', maxWidth: 320 }}
+                >
+                  <option value="balanced">balanced</option>
+                  <option value="lowest_cost">lowest_cost</option>
+                  <option value="highest_quality">highest_quality</option>
+                  <option value="free_only">free_only</option>
+                  <option value="beam">beam</option>
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="beam-width">Beam width</label>
+                <input
+                  id="beam-width"
+                  type="number"
+                  min={1}
+                  max={16}
+                  value={beamWidth}
+                  onChange={(e) => setBeamWidth(e.target.value)}
                 />
+              </div>
+              <div className="form-field">
+                <label htmlFor="consensus">Consensus mode</label>
+                <select
+                  id="consensus"
+                  value={consensusMode}
+                  onChange={(e) => setConsensusMode(e.target.value)}
+                  style={{ width: '100%', maxWidth: 320 }}
+                >
+                  <option value="abtc">abtc</option>
+                  <option value="uniform">uniform</option>
+                  <option value="static">static</option>
+                </select>
+              </div>
+              <div className="form-field">
+                <label htmlFor="domain">Domain tag</label>
+                <input
+                  id="domain"
+                  value={domain}
+                  onChange={(e) => setDomain(e.target.value)}
+                  placeholder="general"
+                />
+              </div>
+              <div className="form-field">
+                <label htmlFor="explore-paths" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <input
+                    id="explore-paths"
+                    type="checkbox"
+                    checked={explorePaths}
+                    onChange={(e) => setExplorePaths(e.target.checked)}
+                  />
+                  Explore paths (parallel candidate paths in orchestration)
+                </label>
               </div>
               <div className="form-field">
                 <label htmlFor="budget">Monthly budget (USD)</label>

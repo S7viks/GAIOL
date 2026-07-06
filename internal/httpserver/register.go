@@ -3,6 +3,7 @@ package httpserver
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -43,16 +44,34 @@ func (d *Deps) InitConfigFromEnv() {
 	} else {
 		d.AllowedOrigins = make(map[string]struct{})
 		for _, o := range strings.Split(s, ",") {
-			o = strings.TrimSpace(o)
-			if o != "" {
-				d.AllowedOrigins[o] = struct{}{}
-			}
+			addAllowedOrigin(d.AllowedOrigins, o)
 		}
+	}
+	// When an allowlist is active, also permit the API host itself (Render sets RENDER_EXTERNAL_URL).
+	if d.AllowedOrigins != nil {
+		addAllowedOrigin(d.AllowedOrigins, os.Getenv("RENDER_EXTERNAL_URL"))
+		addAllowedOrigin(d.AllowedOrigins, os.Getenv("PUBLIC_URL"))
 	}
 	d.LogLevel = strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
 	if d.LogLevel == "" {
 		d.LogLevel = "info"
 	}
+}
+
+func addAllowedOrigin(origins map[string]struct{}, raw string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil || u.Scheme == "" || u.Host == "" {
+			return
+		}
+		origins[strings.TrimRight(u.Scheme+"://"+u.Host, "/")] = struct{}{}
+		return
+	}
+	origins[strings.TrimRight(raw, "/")] = struct{}{}
 }
 
 // Register attaches all HTTP routes to mux (use a dedicated http.NewServeMux() in cmd/web-server).

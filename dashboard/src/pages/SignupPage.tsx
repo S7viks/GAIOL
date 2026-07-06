@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { fetchAuthSession, getAccessToken } from '../lib/auth'
 import { signUp } from '../lib/authApi'
 import { fetchHealthBody } from '../lib/api'
-import { apiUrl } from '../lib/apiBase'
+import { ApiUnreachableHelp } from '../components/auth/ApiUnreachableHelp'
 
 export function SignupPage() {
   const navigate = useNavigate()
@@ -81,14 +81,7 @@ export function SignupPage() {
           <div className="auth-header">
             <h1>Create account</h1>
             <p>Get your GAIOL API key and connect providers in the dashboard.</p>
-            {apiUnreachable && (
-              <p className="error-message" role="alert">
-                Cannot reach the Go API at <code>{apiUrl('/health')}</code>. Start it with{' '}
-                <code>go run cmd/web-server/main.go</code> or <code>.\scripts\dev\start-relay.ps1 -Dashboard</code>, then
-                refresh. If the dashboard is on a different host (e.g. Vercel), rebuild with{' '}
-                <code>VITE_API_BASE</code> set to your API origin (see root <code>.env.example</code>).
-              </p>
-            )}
+            {apiUnreachable && <ApiUnreachableHelp />}
             {databaseUnreachable && (
               <p className="error-message" role="alert">
                 Supabase is not reachable from the API. Check <code>SUPABASE_URL</code> in your root <code>.env</code>,

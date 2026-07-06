@@ -73,3 +73,9 @@ func getEncryptionKey() ([]byte, error) {
 	}
 	return key, nil
 }
+
+// EncryptionKeyConfigured reports whether GAIOL_ENCRYPTION_KEY is present and valid.
+func EncryptionKeyConfigured() bool {
+	_, err := getEncryptionKey()
+	return err == nil
+}

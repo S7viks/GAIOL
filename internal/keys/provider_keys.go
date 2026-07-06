@@ -21,6 +21,24 @@ type ProviderKeyRow struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
+// NormalizeAPIKey trims whitespace and strips a leading Bearer prefix when users paste
+// "Bearer sk-or-..." from docs or curl examples (avoids double-Bearer on OpenRouter).
+func NormalizeAPIKey(apiKey string) string {
+	apiKey = strings.TrimSpace(apiKey)
+	for {
+		lower := strings.ToLower(apiKey)
+		if strings.HasPrefix(lower, "bearer ") {
+			apiKey = strings.TrimSpace(apiKey[7:])
+			continue
+		}
+		if lower == "bearer" {
+			return ""
+		}
+		break
+	}
+	return apiKey
+}
+
 // StoreProviderKey encrypts the API key and upserts into provider_api_keys for the tenant.
 // Provider should be a built-in id (openrouter, openai, anthropic, google, groq, together, huggingface).
 // Ollama is stored via StoreOllamaProvider instead. Returns key_hint (e.g. last 4 chars).
@@ -32,6 +50,10 @@ func StoreProviderKey(ctx context.Context, db *database.Client, tenantID string,
 	if provider == "" {
 		return "", errors.New("invalid provider")
 	}
+	if apiKey == "" {
+		return "", errors.New("api_key is required")
+	}
+	apiKey = NormalizeAPIKey(apiKey)
 	if apiKey == "" {
 		return "", errors.New("api_key is required")
 	}

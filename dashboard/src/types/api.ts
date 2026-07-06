@@ -76,6 +76,10 @@ export interface ActivityResponse {
 export interface PreferencesResponse {
   budget_limit?: number | null
   strategy?: string
+  beam_width?: number
+  consensus_mode?: string
+  domain?: string
+  explore_paths?: boolean
 }
 
 /** Matches keys.ProviderKeyRow from GET /api/settings/provider-keys */

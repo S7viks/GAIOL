@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { PageHeader, PageSection } from '../components/layout/PageShell'
 import type { ProviderKeyRow } from '../types/api'
 import { apiGet, apiPost, ApiError, fetchHealthBody } from '../lib/api'
-import { fetchAuthSession, loginHref } from '../lib/auth'
+import { fetchAuthSession, getAccessToken, loginHref } from '../lib/auth'
 import { useToast } from '../components/ui/Toast'
 import { isLocalProvider, providerMeta, PROVIDER_OPTIONS } from '../lib/providers'
 
@@ -25,6 +25,7 @@ export function OnboardingPage() {
 
   const [providerLoading, setProviderLoading] = useState(false)
   const [providerSaveError, setProviderSaveError] = useState<string | null>(null)
+  const [encryptionKeyMissing, setEncryptionKeyMissing] = useState(false)
   const [newProvider, setNewProvider] = useState<string>('openrouter')
   const [newApiKey, setNewApiKey] = useState<string>('')
   const [newBaseUrl, setNewBaseUrl] = useState<string>('http://localhost:11434')
@@ -54,6 +55,25 @@ export function OnboardingPage() {
     await loadGaiolKeys()
   }, [loadGaiolKeys, loadProviderKeys])
 
+  const refreshAuthState = useCallback(async () => {
+    const h = await fetchHealthBody()
+    setAuthDisabled(!!h.authDisabled)
+    setEncryptionKeyMissing(h.encryptionKeyConfigured === false)
+
+    if (h.authDisabled) {
+      setAuthenticated(false)
+      setProviderKeys([])
+      setGaiolKeys([])
+      setStep(0)
+      return false
+    }
+
+    const s = await fetchAuthSession()
+    const signedIn = !!s.authenticated && !!getAccessToken()?.trim()
+    setAuthenticated(signedIn)
+    return signedIn
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     ;(async () => {
@@ -61,26 +81,12 @@ export function OnboardingPage() {
       setAuthDisabled(false)
       setAuthenticated(false)
       try {
-        const h = await fetchHealthBody()
+        const signedIn = await refreshAuthState()
         if (cancelled) return
-        setAuthDisabled(!!h.authDisabled)
-
-        if (h.authDisabled) {
-          setAuthenticated(false)
-          setProviderKeys([])
-          setGaiolKeys([])
-          setStep(0)
-          return
-        }
-
-        const s = await fetchAuthSession()
-        if (cancelled) return
-        setAuthenticated(!!s.authenticated)
-
-        if (!s.authenticated) return
-        await refreshAll()
+        if (signedIn) await refreshAll()
       } catch (e) {
         if (!cancelled) {
+          setAuthenticated(false)
           toast.error(e instanceof ApiError ? e.message : String(e))
         }
       } finally {
@@ -90,7 +96,17 @@ export function OnboardingPage() {
     return () => {
       cancelled = true
     }
-  }, [refreshAll, toast])
+  }, [refreshAll, refreshAuthState, toast])
+
+  useEffect(() => {
+    const onFocus = () => {
+      void refreshAuthState().then((signedIn) => {
+        if (signedIn) void refreshAll()
+      })
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [refreshAll, refreshAuthState])
 
   useEffect(() => {
     if (authDisabled || !authenticated) return
@@ -139,6 +155,11 @@ export function OnboardingPage() {
 
   async function addProviderKey() {
     setProviderSaveError(null)
+    if (!getAccessToken()?.trim()) {
+      setAuthenticated(false)
+      setProviderSaveError('Sign in to save provider keys.')
+      return
+    }
     const meta = providerMeta(newProvider)
     const trimmed = newApiKey.trim()
     if (meta?.requiresApiKey !== false && !trimmed) {
@@ -167,7 +188,17 @@ export function OnboardingPage() {
       toast.success('Provider key saved')
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : String(e)
-      setProviderSaveError(msg)
+      const code = e instanceof ApiError ? e.code : undefined
+      const status = e instanceof ApiError ? e.status : 0
+      if (status === 401 || /authorization required/i.test(msg)) {
+        setAuthenticated(false)
+        setProviderSaveError('Your session expired. Sign in again, then save your provider key.')
+      } else if (code === 'encryption_key_missing') {
+        setEncryptionKeyMissing(true)
+        setProviderSaveError(msg)
+      } else {
+        setProviderSaveError(msg)
+      }
       toast.error(msg)
     } finally {
       setProviderLoading(false)
@@ -192,9 +223,16 @@ export function OnboardingPage() {
       <div className="page">
         <PageHeader title="Setup" description="Sign in to connect your model providers." />
         <PageSection>
+          <p className="page-shell__desc" style={{ marginBottom: 12 }}>
+            Provider keys are stored per account. Create an account or sign in, then return here to connect OpenRouter,
+            Gemini, or other providers.
+          </p>
           <a className="btn" href={loginHref()}>
             Sign in
-          </a>
+          </a>{' '}
+          <Link className="btn btn--ghost" to="/signup">
+            Create account
+          </Link>
         </PageSection>
       </div>
     )
@@ -212,6 +250,15 @@ export function OnboardingPage() {
           <span className="badge">1 · Provider keys</span>
           <span className="badge">2 · Ready</span>
         </div>
+
+        {encryptionKeyMissing && (
+          <div className="alert alert--err" style={{ marginBottom: 16 }} role="alert">
+            <strong>Server configuration required.</strong> The API host is missing{' '}
+            <code>GAIOL_ENCRYPTION_KEY</code> (needed to encrypt provider keys). On Render: open your GAIOL service →
+            Environment → add <code>GAIOL_ENCRYPTION_KEY</code> with a 64-character hex value from{' '}
+            <code>openssl rand -hex 32</code>, then redeploy. Saving provider keys will not work until this is set.
+          </div>
+        )}
 
         {providerSaveError && (
           <div className="alert alert--err" style={{ marginBottom: 16 }}>
@@ -275,7 +322,12 @@ export function OnboardingPage() {
               </div>
             )}
 
-            <button type="button" className="btn" disabled={providerLoading} onClick={() => void addProviderKey()}>
+            <button
+              type="button"
+              className="btn"
+              disabled={providerLoading || encryptionKeyMissing}
+              onClick={() => void addProviderKey()}
+            >
               {providerLoading ? 'Saving…' : isLocalProvider(newProvider) ? 'Connect Ollama' : 'Save provider key'}
             </button>
 
